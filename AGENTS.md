@@ -3,8 +3,14 @@
 ## Project Overview
 Atomic is a Tauri v2 desktop application for note-taking with a React frontend. It features markdown editing, hierarchical tagging, and AI-powered semantic search using local embeddings.
 
-## Current Status: Phase 2 Complete
-Phase 2 (Embedding Pipeline) is complete with:
+## Current Status: Phase 2.1 Complete
+Phase 2.1 (Real sqlite-lembed Integration) is complete with:
+- Real 384-dimensional embeddings using sqlite-lembed and all-MiniLM-L6-v2 model
+- sqlite-lembed extension loaded at runtime for each database connection
+- Model registered in temp.lembed_models for embedding generation
+- Semantic search uses real embeddings for query and content matching
+
+Phase 2 (Embedding Pipeline) features:
 - Async embedding generation when atoms are created or updated
 - Content chunking algorithm for optimal embedding
 - Semantic search using sqlite-vec for vector similarity
@@ -27,8 +33,8 @@ Phase 1 (Foundation + Data Layer) features:
 - **Build Tool**: Vite 6
 - **Styling**: Tailwind CSS v4 (using `@tailwindcss/vite` plugin)
 - **State Management**: Zustand 5
-- **Database**: SQLite with sqlite-vec extension (via rusqlite)
-- **Embeddings**: Simulated 384-dimensional vectors (ready for sqlite-lembed integration)
+- **Database**: SQLite with sqlite-vec and sqlite-lembed extensions (via rusqlite)
+- **Embeddings**: Real 384-dimensional vectors via sqlite-lembed + all-MiniLM-L6-v2 GGUF model
 - **Markdown Editor**: CodeMirror 6 (`@uiw/react-codemirror`)
 - **Markdown Rendering**: react-markdown with remark-gfm
 
@@ -37,14 +43,15 @@ Phase 1 (Foundation + Data Layer) features:
 /src-tauri
   /src
     main.rs           # Tauri entry point
-    lib.rs            # App setup, command registration
-    db.rs             # SQLite setup, migrations, connection pool
+    lib.rs            # App setup, command registration, resource path resolution
+    db.rs             # SQLite setup, migrations, sqlite-lembed loading, model registration
     commands.rs       # All Tauri command implementations
     models.rs         # Rust structs for data
-    chunking.rs       # Content chunking algorithm (Phase 2)
-    embedding.rs      # Embedding generation logic (Phase 2)
+    chunking.rs       # Content chunking algorithm
+    embedding.rs      # Embedding generation using sqlite-lembed
   /resources
-    all-MiniLM-L6-v2.q8_0.gguf  # Bundled embedding model (~23MB)
+    all-MiniLM-L6-v2.q8_0.gguf  # Bundled embedding model (~24MB, Q8_0 quantization)
+    lembed0.so                   # sqlite-lembed extension (Linux x86_64, ~2.4MB)
   Cargo.toml
   tauri.conf.json
 
@@ -140,7 +147,7 @@ CREATE TABLE atom_chunks (
   atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
   chunk_index INTEGER NOT NULL,
   content TEXT NOT NULL,
-  embedding BLOB  -- 384-dimensional float vector
+  embedding BLOB  -- 384-dimensional float vector from sqlite-lembed
 );
 
 -- Vector similarity search (sqlite-vec virtual table)
@@ -148,6 +155,9 @@ CREATE VIRTUAL TABLE vec_chunks USING vec0(
   chunk_id TEXT PRIMARY KEY,
   embedding float[384]
 );
+
+-- Temporary table for sqlite-lembed model registration (per-connection)
+-- temp.lembed_models(name TEXT, model BLOB)
 ```
 
 ## Tauri Commands (API)
@@ -166,7 +176,7 @@ CREATE VIRTUAL TABLE vec_chunks USING vec0(
 - `update_tag(id, name, parent_id?)` → `Tag`
 - `delete_tag(id)` → `()`
 
-### Embedding Operations (Phase 2)
+### Embedding Operations
 - `find_similar_atoms(atom_id, limit, threshold)` → `Vec<SimilarAtomResult>`
 - `search_atoms_semantic(query, limit, threshold)` → `Vec<SemanticSearchResult>`
 - `retry_embedding(atom_id)` → `()` (retriggers embedding for failed atoms)
@@ -204,7 +214,7 @@ Content is chunked for optimal embedding generation:
 ### Rust (Cargo.toml)
 - `tauri` = "2"
 - `tauri-plugin-opener` = "2"
-- `rusqlite` = { version = "0.32", features = ["bundled"] }
+- `rusqlite` = { version = "0.32", features = ["bundled", "load_extension"] }
 - `sqlite-vec` = "0.1.6"
 - `serde` = { version = "1", features = ["derive"] }
 - `serde_json` = "1"
@@ -270,20 +280,23 @@ Content is chunked for optimal embedding generation:
 - `searchQuery: string` - Text search filter
 - Actions: `setSelectedTag`, `openDrawer`, `closeDrawer`, `setViewMode`, `setSearchQuery`
 
-## Embedding Implementation Notes
+## sqlite-lembed Integration
 
-### Current Implementation (Simulated)
-The current implementation uses simulated embeddings:
-- Generates deterministic 384-dimensional vectors based on content hash
-- Uses the same vector format as sqlite-vec expects
-- Ready for real sqlite-lembed integration
+### How It Works
+1. **Extension Loading**: On database initialization, sqlite-lembed is loaded via `conn.load_extension()` with the `load_extension` feature enabled in rusqlite
+2. **Model Registration**: The all-MiniLM-L6-v2 GGUF model is registered in `temp.lembed_models` for each connection
+3. **Embedding Generation**: Content chunks are embedded using `SELECT lembed('all-MiniLM-L6-v2', ?1)`
+4. **Query Embedding**: Search queries are embedded the same way for semantic matching
 
-### Future sqlite-lembed Integration
-To enable real embeddings:
-1. Download sqlite-lembed extension for your platform
-2. Load extension at runtime: `conn.load_extension("lembed0")`
-3. Register model: `INSERT INTO temp.lembed_models(name, model) SELECT 'all-MiniLM-L6-v2', lembed_model_from_file('/path/to/model.gguf')`
-4. Replace `generate_simulated_embedding()` with: `SELECT lembed('all-MiniLM-L6-v2', ?)`
+### Resource Files
+- `lembed0.so` - sqlite-lembed extension binary (Linux x86_64, v0.0.1-alpha.8)
+- `all-MiniLM-L6-v2.q8_0.gguf` - Embedding model (Q8_0 quantization, ~24MB)
+
+### Platform Support
+Currently bundled for Linux x86_64. For other platforms:
+- macOS aarch64: Download `sqlite-lembed-0.0.1-alpha.8-loadable-macos-aarch64.tar.gz`
+- macOS x86_64: Download `sqlite-lembed-0.0.1-alpha.8-loadable-macos-x86_64.tar.gz`
+- Windows: Not yet available in pre-built form
 
 ### Similarity Calculation
 - sqlite-vec returns Euclidean distance (lower = more similar)
