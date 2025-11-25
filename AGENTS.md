@@ -1,10 +1,23 @@
 # Atomic - Note-Taking Desktop Application
 
 ## Project Overview
-Atomic is a Tauri v2 desktop application for note-taking with a React frontend. It features markdown editing, hierarchical tagging, AI-powered semantic search using local embeddings, automatic tag extraction, and wiki article synthesis using OpenRouter LLM.
+Atomic is a Tauri v2 desktop application for note-taking with a React frontend. It features markdown editing, hierarchical tagging, AI-powered semantic search using local embeddings, automatic tag extraction, wiki article synthesis using OpenRouter LLM, and an interactive canvas view for spatial atom visualization.
 
-## Current Status: Phase 4 Complete
-Phase 4 (Wiki Synthesis) is complete with:
+## Current Status: Phase 5 Complete
+Phase 5 (Canvas View) is complete with:
+- Interactive, zoomable canvas view as the default view option
+- Atoms spatially arranged using D3-force simulation based on semantic similarity
+- Connection lines drawn between atoms sharing tags
+- Zoom/pan handled by react-zoom-pan-pinch library
+- View toggle (Canvas | Grid | List) in main view header
+- Canvas view persisted as default, preference saved to localStorage
+- Tag filtering fades non-matching atoms to 20% opacity
+- Semantic search fades non-matching atoms to 20% opacity
+- Positions saved to database after simulation completes
+- Subsequent canvas views load stored positions (no re-simulation)
+- Incremental position calculation for new atoms
+
+Phase 4 (Wiki Synthesis) features:
 - Wiki article generation for tags using OpenRouter LLM
 - Inline citations with [N] notation linking to source atoms
 - Citation popovers showing excerpt text with "View full atom" links
@@ -49,13 +62,14 @@ Phase 1 (Foundation + Data Layer) features:
 - **Frontend**: React 18+ with TypeScript
 - **Build Tool**: Vite 6
 - **Styling**: Tailwind CSS v4 (using `@tailwindcss/vite` plugin)
-- **State Management**: Zustand 5
+- **State Management**: Zustand 5 (with persist middleware for UI preferences)
 - **Database**: SQLite with sqlite-vec and sqlite-lembed extensions (via rusqlite)
 - **Embeddings**: Real 384-dimensional vectors via sqlite-lembed + all-MiniLM-L6-v2 GGUF model
 - **LLM Provider**: OpenRouter API (anthropic/claude-sonnet-4.5 with structured outputs)
 - **HTTP Client**: reqwest (Rust)
 - **Markdown Editor**: CodeMirror 6 (`@uiw/react-codemirror`)
 - **Markdown Rendering**: react-markdown with remark-gfm
+- **Canvas Visualization**: d3-force (simulation), react-zoom-pan-pinch (zoom/pan)
 
 ## Project Structure
 ```
@@ -83,6 +97,7 @@ Phase 1 (Foundation + Data Layer) features:
   /components
     /layout           # LeftPanel, MainView, RightDrawer, Layout
     /atoms            # AtomCard, AtomEditor, AtomViewer, AtomGrid, AtomList, RelatedAtoms
+    /canvas           # CanvasView, CanvasContent, AtomNode, ConnectionLines, CanvasControls, useForceSimulation
     /tags             # TagTree, TagNode, TagChip, TagSelector
     /wiki             # WikiViewer, WikiArticleContent, WikiHeader, WikiEmptyState, WikiGenerating, CitationLink, CitationPopover
     /search           # SemanticSearch
@@ -90,7 +105,7 @@ Phase 1 (Foundation + Data Layer) features:
     /ui               # Button, Input, Modal, FAB, ContextMenu
   /stores             # Zustand stores (atoms.ts, tags.ts, ui.ts, settings.ts, wiki.ts)
   /hooks              # Custom hooks (useClickOutside, useKeyboard, useEmbeddingEvents)
-  /lib                # Utilities (tauri.ts, markdown.ts, date.ts)
+  /lib                # Utilities (tauri.ts, markdown.ts, date.ts, similarity.ts)
   App.tsx
   main.tsx
   index.css           # Tailwind imports + custom animations
@@ -208,6 +223,14 @@ CREATE TABLE wiki_citations (
   excerpt TEXT NOT NULL
 );
 
+-- Atom positions for canvas view
+CREATE TABLE atom_positions (
+  atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
+  x REAL NOT NULL,
+  y REAL NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 -- Temporary table for sqlite-lembed model registration (per-connection)
 -- temp.lembed_models(name TEXT, model BLOB)
 ```
@@ -250,6 +273,11 @@ CREATE TABLE wiki_citations (
 - `get_settings()` → `HashMap<String, String>` (all settings)
 - `set_setting(key, value)` → `()` (upsert a setting)
 - `test_openrouter_connection(apiKey)` → `Result<bool, String>` (validates API key)
+
+### Canvas Operations
+- `get_atom_positions()` → `Vec<AtomPosition>` (returns all stored canvas positions)
+- `save_atom_positions(positions)` → `()` (bulk save/update positions after simulation)
+- `get_atoms_with_embeddings()` → `Vec<AtomWithEmbedding>` (atoms with average embedding vectors)
 
 ### Utility
 - `check_sqlite_vec()` → `String` (version check)
@@ -336,6 +364,41 @@ New tags are automatically placed under category tags:
 - Extraction failures don't break the embedding pipeline
 - Missing API key or disabled auto-tagging gracefully skips extraction
 
+## Canvas View
+
+### Architecture
+The canvas view provides a spatial visualization of atoms using:
+- **react-zoom-pan-pinch**: Handles zoom/pan interactions via TransformWrapper and TransformComponent
+- **d3-force**: Calculates atom positions using force simulation (no D3 rendering)
+- **React components**: Renders atom cards and SVG connection lines
+
+### Force Simulation
+The simulation uses multiple forces to position atoms:
+- `forceManyBody()`: Repulsion between atoms (strength: -200)
+- `forceCollide()`: Collision detection (radius: 100px)
+- `forceLink()`: Attraction between atoms sharing tags
+- `forceCenter()`: Centers graph at (2500, 2500) on 5000x5000 canvas
+- Custom `similarityForce`: Attraction based on embedding cosine similarity (threshold: 0.7)
+
+### Position Persistence
+- Positions are saved to `atom_positions` table after simulation completes
+- On subsequent loads, stored positions are used (no re-simulation)
+- New atoms trigger incremental simulation with existing atoms fixed initially
+
+### Visual Design
+- **Atom nodes**: 160px wide compact cards with truncated content
+- **Connection lines**: SVG lines between atoms sharing tags (opacity: 0.15)
+- **Fading**: Non-matching atoms fade to 20% opacity when filtering by tag or search
+- **Canvas controls**: Zoom in/out/reset buttons in bottom-right corner
+
+### Components
+- `CanvasView`: Main container, handles data loading and simulation orchestration
+- `CanvasContent`: Inner content layer that gets transformed by zoom/pan
+- `AtomNode`: Compact card component for individual atoms (memoized)
+- `ConnectionLines`: SVG layer rendering lines between connected atoms
+- `CanvasControls`: Zoom control buttons using react-zoom-pan-pinch hooks
+- `useForceSimulation`: Custom hook managing D3 force simulation
+
 ## Chunking Algorithm
 
 Content is chunked for optimal embedding generation:
@@ -373,6 +436,9 @@ Content is chunked for optimal embedding generation:
 - `tailwindcss` = "^4.0.0"
 - `@tailwindcss/vite` = "^4.0.0"
 - `@tailwindcss/typography` = "^0.5.19"
+- `d3-force` = "^3.0.0"
+- `react-zoom-pan-pinch` = "^3.0.0"
+- `@types/d3-force` = "^3.0.0" (dev)
 
 ## Design System (Dark Theme - Obsidian-inspired)
 
@@ -414,7 +480,7 @@ Content is chunked for optimal embedding generation:
 ### ui.ts
 - `selectedTagId: string | null` - Currently selected tag filter
 - `drawerState: { isOpen, mode, atomId, tagId, tagName }` - Drawer state
-- `viewMode: 'grid' | 'list'` - Atom display mode
+- `viewMode: 'canvas' | 'grid' | 'list'` - Atom display mode (default: 'canvas', persisted to localStorage)
 - `searchQuery: string` - Text search filter
 - Actions: `setSelectedTag`, `openDrawer`, `openWikiDrawer`, `closeDrawer`, `setViewMode`, `setSearchQuery`
 

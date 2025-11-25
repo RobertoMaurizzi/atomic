@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { AtomGrid } from '../atoms/AtomGrid';
 import { AtomList } from '../atoms/AtomList';
+import { CanvasView } from '../canvas/CanvasView';
 import { FAB } from '../ui/FAB';
 import { SemanticSearch } from '../search/SemanticSearch';
 import { useAtomsStore, SemanticSearchResult } from '../../stores/atoms';
@@ -14,7 +15,7 @@ export function MainView() {
     semanticSearchQuery,
     retryEmbedding,
   } = useAtomsStore();
-  const { viewMode, setViewMode, searchQuery, openDrawer } = useUIStore();
+  const { viewMode, setViewMode, searchQuery, selectedTagId, openDrawer } = useUIStore();
 
   // Determine what to display
   const displayAtoms = useMemo(() => {
@@ -35,6 +36,12 @@ export function MainView() {
 
   // Check if we're showing semantic search results
   const isSemanticSearch = semanticSearchResults !== null;
+
+  // Get search result IDs for canvas view
+  const searchResultIds = useMemo(() => {
+    if (!isSemanticSearch) return null;
+    return semanticSearchResults.map((r) => r.id);
+  }, [isSemanticSearch, semanticSearchResults]);
 
   // Get matching chunk content for semantic search results
   const getMatchingChunkContent = (atomId: string): string | undefined => {
@@ -71,8 +78,19 @@ export function MainView() {
         {/* View Mode Toggle */}
         <div className="flex items-center bg-[#2d2d2d] rounded-md border border-[#3d3d3d]">
           <button
+            onClick={() => setViewMode('canvas')}
+            className={`px-3 py-1.5 text-sm rounded-l-md transition-colors ${
+              viewMode === 'canvas'
+                ? 'bg-[#7c3aed] text-white'
+                : 'text-[#888888] hover:text-[#dcddde]'
+            }`}
+            title="Canvas view"
+          >
+            Canvas
+          </button>
+          <button
             onClick={() => setViewMode('grid')}
-            className={`p-2 rounded-l-md transition-colors ${
+            className={`p-2 transition-colors ${
               viewMode === 'grid'
                 ? 'bg-[#7c3aed] text-white'
                 : 'text-[#888888] hover:text-[#dcddde]'
@@ -108,14 +126,16 @@ export function MainView() {
           </button>
         </div>
 
-        {/* Atom count */}
-        <span className="text-sm text-[#888888]">
-          {displayAtoms.length} atom{displayAtoms.length !== 1 ? 's' : ''}
-        </span>
+        {/* Atom count - only show for grid/list views */}
+        {viewMode !== 'canvas' && (
+          <span className="text-sm text-[#888888]">
+            {displayAtoms.length} atom{displayAtoms.length !== 1 ? 's' : ''}
+          </span>
+        )}
       </header>
 
-      {/* Search results header */}
-      {isSemanticSearch && (
+      {/* Search results header - only show for grid/list views */}
+      {isSemanticSearch && viewMode !== 'canvas' && (
         <div className="px-4 py-2 text-sm text-[#888888] border-b border-[#3d3d3d]">
           {semanticSearchResults.length > 0 ? (
             <span>
@@ -128,7 +148,7 @@ export function MainView() {
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-hidden">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex items-center gap-3 text-[#888888]">
@@ -150,20 +170,31 @@ export function MainView() {
               Loading atoms...
             </div>
           </div>
+        ) : viewMode === 'canvas' ? (
+          <CanvasView
+            atoms={atoms}
+            selectedTagId={selectedTagId}
+            searchResultIds={searchResultIds}
+            onAtomClick={handleAtomClick}
+          />
         ) : viewMode === 'grid' ? (
-          <AtomGrid
-            atoms={displayAtoms}
-            onAtomClick={handleAtomClick}
-            getMatchingChunkContent={isSemanticSearch ? getMatchingChunkContent : undefined}
-            onRetryEmbedding={handleRetryEmbedding}
-          />
+          <div className="h-full overflow-y-auto">
+            <AtomGrid
+              atoms={displayAtoms}
+              onAtomClick={handleAtomClick}
+              getMatchingChunkContent={isSemanticSearch ? getMatchingChunkContent : undefined}
+              onRetryEmbedding={handleRetryEmbedding}
+            />
+          </div>
         ) : (
-          <AtomList
-            atoms={displayAtoms}
-            onAtomClick={handleAtomClick}
-            getMatchingChunkContent={isSemanticSearch ? getMatchingChunkContent : undefined}
-            onRetryEmbedding={handleRetryEmbedding}
-          />
+          <div className="h-full overflow-y-auto">
+            <AtomList
+              atoms={displayAtoms}
+              onAtomClick={handleAtomClick}
+              getMatchingChunkContent={isSemanticSearch ? getMatchingChunkContent : undefined}
+              onRetryEmbedding={handleRetryEmbedding}
+            />
+          </div>
         )}
       </div>
 
