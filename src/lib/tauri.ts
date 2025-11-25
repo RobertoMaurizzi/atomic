@@ -62,3 +62,38 @@ export async function deleteWikiArticle(tagId: string): Promise<void> {
   return invoke('delete_wiki_article', { tagId });
 }
 
+// Canvas position commands
+export interface AtomPosition {
+  atom_id: string;
+  x: number;
+  y: number;
+}
+
+export interface AtomWithEmbedding {
+  id: string;
+  content: string;
+  source_url: string | null;
+  created_at: string;
+  updated_at: string;
+  embedding_status: string;
+  tags: Array<{
+    id: string;
+    name: string;
+    parent_id: string | null;
+    created_at: string;
+  }>;
+  embedding: number[] | null;
+}
+
+export async function getAtomPositions(): Promise<AtomPosition[]> {
+  return invoke('get_atom_positions');
+}
+
+export async function saveAtomPositions(positions: AtomPosition[]): Promise<void> {
+  return invoke('save_atom_positions', { positions });
+}
+
+export async function getAtomsWithEmbeddings(): Promise<AtomWithEmbedding[]> {
+  return invoke('get_atoms_with_embeddings');
+}
+
