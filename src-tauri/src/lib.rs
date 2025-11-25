@@ -7,6 +7,7 @@ mod models;
 use db::{Database, SharedDatabase};
 use std::sync::Arc;
 use tauri::Manager;
+use tauri::path::BaseDirectory;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,8 +19,14 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to get app data directory");
 
-            let database =
-                Database::new(app_data_dir.clone()).expect("Failed to initialize database");
+            // Get the resource directory where model and extension are bundled
+            let resource_dir = app
+                .path()
+                .resolve("resources", BaseDirectory::Resource)
+                .expect("Failed to resolve resource directory");
+
+            let database = Database::new(app_data_dir.clone(), resource_dir.clone())
+                .expect("Failed to initialize database");
 
             // Create a shared database reference for embedding tasks
             // This creates a new connection to the same database file
@@ -29,6 +36,7 @@ pub fn run() {
             let shared_db: SharedDatabase = Arc::new(Database {
                 conn: std::sync::Mutex::new(shared_conn),
                 db_path: database.db_path.clone(),
+                resource_dir: database.resource_dir.clone(),
             });
 
             app.manage(database);

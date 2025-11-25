@@ -1,7 +1,5 @@
 use crate::db::{Database, SharedDatabase};
-use crate::embedding::{
-    distance_to_similarity, embedding_to_blob, generate_simulated_embedding, spawn_embedding_task,
-};
+use crate::embedding::{distance_to_similarity, spawn_embedding_task};
 use crate::models::{Atom, AtomWithTags, SemanticSearchResult, SimilarAtomResult, Tag, TagWithCount};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -530,7 +528,7 @@ pub fn find_similar_atoms(
 }
 
 /// Search atoms semantically using a query string
-/// 1. Generate embedding for query text (simulated)
+/// 1. Generate embedding for query text using sqlite-lembed
 /// 2. Search vec_chunks for similar chunks
 /// 3. Filter by threshold
 /// 4. Deduplicate by parent atom_id
@@ -544,9 +542,14 @@ pub fn search_atoms_semantic(
 ) -> Result<Vec<SemanticSearchResult>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
-    // 1. Generate embedding for query text
-    let query_embedding = generate_simulated_embedding(&query);
-    let query_blob = embedding_to_blob(&query_embedding);
+    // 1. Generate REAL embedding for query using sqlite-lembed
+    let query_blob: Vec<u8> = conn
+        .query_row(
+            "SELECT lembed('all-MiniLM-L6-v2', ?1)",
+            [&query],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to generate query embedding: {}", e))?;
 
     // 2. Search vec_chunks for similar chunks
     let mut vec_stmt = conn

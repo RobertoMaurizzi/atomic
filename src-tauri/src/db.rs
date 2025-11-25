@@ -7,13 +7,14 @@ use std::sync::{Arc, Mutex};
 pub struct Database {
     pub conn: Mutex<Connection>,
     pub db_path: PathBuf,
+    pub resource_dir: PathBuf,
 }
 
 /// Thread-safe wrapper around Database using Arc
 pub type SharedDatabase = Arc<Database>;
 
 impl Database {
-    pub fn new(app_data_dir: PathBuf) -> Result<Self, String> {
+    pub fn new(app_data_dir: PathBuf, resource_dir: PathBuf) -> Result<Self, String> {
         // Register sqlite-vec extension
         unsafe {
             #[allow(clippy::missing_transmute_annotations)]
@@ -28,20 +29,69 @@ impl Database {
         let conn = Connection::open(&db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
 
+        // Enable extension loading and load sqlite-lembed
+        Self::load_lembed_extension(&conn, &resource_dir)?;
+
         // Run migrations
         Self::run_migrations(&conn)?;
+
+        // Register the embedding model
+        Self::register_embedding_model(&conn, &resource_dir)?;
 
         Ok(Database {
             conn: Mutex::new(conn),
             db_path,
+            resource_dir,
         })
+    }
+
+    /// Load the sqlite-lembed extension into a connection
+    fn load_lembed_extension(conn: &Connection, resource_dir: &PathBuf) -> Result<(), String> {
+        // Enable extension loading and load sqlite-lembed extension
+        // Both operations are unsafe as they involve loading external code
+        unsafe {
+            conn.load_extension_enable()
+                .map_err(|e| format!("Failed to enable extension loading: {}", e))?;
+
+            // Load sqlite-lembed extension
+            let lembed_path = resource_dir.join("lembed0");
+            conn.load_extension(&lembed_path, None)
+                .map_err(|e| format!("Failed to load sqlite-lembed extension: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// Register the embedding model for a connection
+    /// The model is registered in temp.lembed_models which is a temporary table,
+    /// so it needs to be re-registered for each new connection
+    fn register_embedding_model(conn: &Connection, resource_dir: &PathBuf) -> Result<(), String> {
+        let model_path = resource_dir.join("all-MiniLM-L6-v2.q8_0.gguf");
+        let model_path_str = model_path
+            .to_str()
+            .ok_or("Invalid model path")?;
+
+        conn.execute(
+            "INSERT INTO temp.lembed_models(name, model) SELECT 'all-MiniLM-L6-v2', lembed_model_from_file(?1)",
+            [model_path_str],
+        )
+        .map_err(|e| format!("Failed to register embedding model: {}", e))?;
+
+        Ok(())
     }
 
     /// Create a new connection to the same database
     /// This is useful for background tasks that need their own connection
+    /// The connection will have sqlite-lembed loaded and the model registered
     pub fn new_connection(&self) -> Result<Connection, String> {
-        Connection::open(&self.db_path)
-            .map_err(|e| format!("Failed to open database connection: {}", e))
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e| format!("Failed to open database connection: {}", e))?;
+
+        // Load sqlite-lembed extension and register model for this connection
+        Self::load_lembed_extension(&conn, &self.resource_dir)?;
+        Self::register_embedding_model(&conn, &self.resource_dir)?;
+
+        Ok(conn)
     }
 
     fn run_migrations(conn: &Connection) -> Result<(), String> {
