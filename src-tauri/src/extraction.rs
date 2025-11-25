@@ -13,6 +13,7 @@ struct OpenRouterRequest {
     response_format: ResponseFormat,
     temperature: f32,
     max_tokens: u32,
+    provider: ProviderPreferences,
 }
 
 #[derive(Serialize)]
@@ -25,6 +26,19 @@ struct Message {
 struct ResponseFormat {
     #[serde(rename = "type")]
     format_type: String,
+    json_schema: JsonSchemaWrapper,
+}
+
+#[derive(Serialize)]
+struct JsonSchemaWrapper {
+    name: String,
+    strict: bool,
+    schema: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct ProviderPreferences {
+    require_parameters: bool,
 }
 
 #[derive(Deserialize)]
@@ -74,19 +88,7 @@ Guidelines for new tags:
 - Prefer using existing tags over creating new ones
 - New top-level categories should be broad (e.g., "Locations", "People", "Organizations", "Topics", "Events")
 - Be consistent with the existing hierarchy's style and granularity
-- Only suggest tags you are confident are relevant
-
-Output valid JSON only, no other text. Use this exact format:
-{
-  "existing_tag_ids": ["uuid-1", "uuid-2"],
-  "new_tags": [
-    {
-      "name": "Tag Name",
-      "parent_id": "uuid-of-parent-or-null",
-      "suggested_category": "location|person|organization|topic|event|other"
-    }
-  ]
-}"#;
+- Only suggest tags you are confident are relevant"#;
 
 /// Extract tags from a single chunk using OpenRouter API
 pub async fn extract_tags_from_chunk(
@@ -96,13 +98,50 @@ pub async fn extract_tags_from_chunk(
     tag_tree_json: &str,
 ) -> Result<ExtractionResult, String> {
     let user_content = format!(
-        "EXISTING TAG HIERARCHY:\n{}\n\nTEXT TO ANALYZE:\n{}\n\nRespond with JSON only.",
+        "EXISTING TAG HIERARCHY:\n{}\n\nTEXT TO ANALYZE:\n{}",
         tag_tree_json,
         chunk_content
     );
 
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "existing_tag_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "IDs of existing tags that apply to this text"
+            },
+            "new_tags": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { 
+                            "type": "string",
+                            "description": "Name of the new tag"
+                        },
+                        "parent_id": { 
+                            "type": ["string", "null"],
+                            "description": "ID of parent tag, or null for top-level"
+                        },
+                        "suggested_category": { 
+                            "type": "string",
+                            "enum": ["location", "person", "organization", "topic", "event", "other"],
+                            "description": "Category type for the new tag"
+                        }
+                    },
+                    "required": ["name", "parent_id", "suggested_category"],
+                    "additionalProperties": false
+                },
+                "description": "New tags to create"
+            }
+        },
+        "required": ["existing_tag_ids", "new_tags"],
+        "additionalProperties": false
+    });
+
     let request = OpenRouterRequest {
-        model: "anthropic/claude-haiku-4.5".to_string(),
+        model: "anthropic/claude-sonnet-4.5".to_string(),
         messages: vec![
             Message {
                 role: "system".to_string(),
@@ -114,10 +153,18 @@ pub async fn extract_tags_from_chunk(
             },
         ],
         response_format: ResponseFormat {
-            format_type: "json_object".to_string(),
+            format_type: "json_schema".to_string(),
+            json_schema: JsonSchemaWrapper {
+                name: "extraction_result".to_string(),
+                strict: true,
+                schema: schema,
+            },
         },
         temperature: 0.1,
         max_tokens: 1000,
+        provider: ProviderPreferences {
+            require_parameters: true,
+        },
     };
 
     // Retry logic with exponential backoff
