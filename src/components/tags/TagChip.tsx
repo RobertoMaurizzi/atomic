@@ -1,6 +1,6 @@
 interface TagChipProps {
   name: string;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
   onRemove?: () => void;
   size?: 'sm' | 'md';
   className?: string;

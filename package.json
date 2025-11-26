@@ -1,7 +1,7 @@
 {
   "name": "atomic",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,12 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "import:wikipedia": "node scripts/import-wikipedia.js",
-    "import:rss": "node scripts/import-rss.js"
+    "import:rss": "node scripts/import-rss.js",
+    "build:release": "node scripts/build-release.js",
+    "build:release:clean": "node scripts/build-release.js --clean",
+    "release:patch": "node scripts/build-release.js --bump-patch --clean --tag",
+    "release:minor": "node scripts/build-release.js --bump-minor --clean --tag",
+    "release:major": "node scripts/build-release.js --bump-major --clean --tag"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.0",
