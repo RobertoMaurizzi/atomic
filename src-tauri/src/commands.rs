@@ -1,5 +1,5 @@
 use crate::db::{Database, SharedDatabase};
-use crate::embedding::{distance_to_similarity, spawn_embedding_task};
+use crate::embedding::{distance_to_similarity, spawn_embedding_task_single};
 use crate::models::{Atom, AtomPosition, AtomWithEmbedding, AtomWithTags, SemanticSearchResult, SimilarAtomResult, Tag, TagWithCount};
 use crate::settings;
 use chrono::Utc;
@@ -71,28 +71,32 @@ pub fn get_all_atoms(db: State<Database>) -> Result<Vec<AtomWithTags>, String> {
 }
 
 #[tauri::command]
-pub fn get_atom(db: State<Database>, id: String) -> Result<AtomWithTags, String> {
+pub fn get_atom_by_id(db: State<Database>, id: String) -> Result<Option<AtomWithTags>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
-    let atom: Atom = conn
-        .query_row(
-            "SELECT id, content, source_url, created_at, updated_at, COALESCE(embedding_status, 'pending') FROM atoms WHERE id = ?1",
-            [&id],
-            |row| {
-                Ok(Atom {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source_url: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                    embedding_status: row.get(5)?,
-                })
-            },
-        )
-        .map_err(|e| e.to_string())?;
+    let atom_result = conn.query_row(
+        "SELECT id, content, source_url, created_at, updated_at, COALESCE(embedding_status, 'pending') FROM atoms WHERE id = ?1",
+        [&id],
+        |row| {
+            Ok(Atom {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                source_url: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                embedding_status: row.get(5)?,
+            })
+        },
+    );
 
-    let tags = get_tags_for_atom(&conn, &atom.id)?;
-    Ok(AtomWithTags { atom, tags })
+    match atom_result {
+        Ok(atom) => {
+            let tags = get_tags_for_atom(&conn, &id)?;
+            Ok(Some(AtomWithTags { atom, tags }))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -135,12 +139,12 @@ pub fn create_atom(
     };
 
     let tags = get_tags_for_atom(&conn, &id)?;
-    
+
     // Drop the connection lock before spawning the embedding task
     drop(conn);
-    
+
     // Spawn embedding task (non-blocking)
-    spawn_embedding_task(
+    spawn_embedding_task_single(
         app_handle,
         Arc::clone(&shared_db),
         id,
@@ -202,12 +206,12 @@ pub fn update_atom(
         .map_err(|e| e.to_string())?;
 
     let tags = get_tags_for_atom(&conn, &id)?;
-    
+
     // Drop the connection lock before spawning the embedding task
     drop(conn);
-    
+
     // Spawn embedding task (non-blocking)
-    spawn_embedding_task(
+    spawn_embedding_task_single(
         app_handle,
         Arc::clone(&shared_db),
         id,
@@ -529,28 +533,41 @@ pub fn find_similar_atoms(
 }
 
 /// Search atoms semantically using a query string
-/// 1. Generate embedding for query text using sqlite-lembed
+/// 1. Generate embedding for query text using OpenRouter
 /// 2. Search vec_chunks for similar chunks
 /// 3. Filter by threshold
 /// 4. Deduplicate by parent atom_id
 /// 5. Return atoms with matching chunk content
 #[tauri::command]
-pub fn search_atoms_semantic(
-    db: State<Database>,
+pub async fn search_atoms_semantic(
+    db: State<'_, Database>,
     query: String,
     limit: i32,
     threshold: f32,
 ) -> Result<Vec<SemanticSearchResult>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    // Get API key from settings
+    let api_key = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let settings_map = crate::settings::get_all_settings(&conn)?;
+        settings_map
+            .get("openrouter_api_key")
+            .cloned()
+            .ok_or("OpenRouter API key not configured. Search requires API key.")?
+    };
 
-    // 1. Generate REAL embedding for query using sqlite-lembed
-    let query_blob: Vec<u8> = conn
-        .query_row(
-            "SELECT lembed('all-MiniLM-L6-v2', ?1)",
-            [&query],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to generate query embedding: {}", e))?;
+    // 1. Generate embedding for query using OpenRouter
+    let client = reqwest::Client::new();
+    let embeddings = crate::embedding::generate_openrouter_embeddings_public(
+        &client,
+        &api_key,
+        &vec![query.clone()],
+    )
+    .await
+    .map_err(|e| format!("Failed to generate query embedding: {}", e))?;
+
+    let query_blob = crate::embedding::f32_vec_to_blob_public(&embeddings[0]);
+
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
     // 2. Search vec_chunks for similar chunks
     let mut vec_stmt = conn
@@ -678,46 +695,40 @@ pub fn retry_embedding(
     drop(conn);
 
     // Spawn embedding task
-    spawn_embedding_task(app_handle, Arc::clone(&shared_db), atom_id, content);
+    spawn_embedding_task_single(app_handle, Arc::clone(&shared_db), atom_id, content);
 
     Ok(())
 }
 
 /// Trigger embedding generation for all atoms with 'pending' status
+/// Uses async batch processing with semaphore to prevent thread exhaustion
 #[tauri::command]
-pub fn process_pending_embeddings(
+pub async fn process_pending_embeddings(
     app_handle: tauri::AppHandle,
-    db: State<Database>,
-    shared_db: State<SharedDatabase>,
+    db: State<'_, Database>,
+    shared_db: State<'_, SharedDatabase>,
 ) -> Result<i32, String> {
-    // Scope the database access to release the lock before spawning tasks
-    let pending_atoms: Vec<(String, String)> = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-
-        // Get all atoms with pending status
-        let mut stmt = conn
-            .prepare("SELECT id, content FROM atoms WHERE embedding_status = 'pending'")
-            .map_err(|e| format!("Failed to prepare query: {}", e))?;
-
-        let result = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|e| format!("Failed to query pending atoms: {}", e))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect pending atoms: {}", e))?;
-        result
-    };
+    // Fetch pending atoms
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, content FROM atoms WHERE embedding_status = 'pending'")
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+    let pending_atoms: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("Failed to query pending atoms: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect pending atoms: {}", e))?;
+    drop(stmt);
+    drop(conn);
 
     let count = pending_atoms.len() as i32;
 
-    // Spawn embedding tasks for each pending atom
-    for (atom_id, content) in pending_atoms {
-        spawn_embedding_task(
-            app_handle.clone(),
-            Arc::clone(&shared_db),
-            atom_id,
-            content,
-        );
-    }
+    // Process batch asynchronously
+    tokio::spawn(crate::embedding::process_embedding_batch(
+        app_handle,
+        Arc::clone(&shared_db),
+        pending_atoms,
+    ));
 
     Ok(count)
 }
@@ -814,17 +825,17 @@ pub async fn generate_wiki_article(
     tag_id: String,
     tag_name: String,
 ) -> Result<crate::models::WikiArticleWithCitations, String> {
-    // Get settings and prepare data (sync, with db lock)
-    let (api_key, input) = {
+    // Get settings and prepare data
+    let api_key = {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let settings_map = settings::get_all_settings(&conn)?;
-        let api_key = settings_map.get("openrouter_api_key").cloned();
-        let input = wiki::prepare_wiki_generation(&conn, &tag_id, &tag_name)?;
-        (api_key, input)
+        settings_map
+            .get("openrouter_api_key")
+            .cloned()
+            .ok_or("OpenRouter API key not configured. Please set it in Settings.")?
     };
-    // Lock released here
 
-    let api_key = api_key.ok_or("OpenRouter API key not configured. Please set it in Settings.")?;
+    let input = wiki::prepare_wiki_generation(&db, &api_key, &tag_id, &tag_name).await?;
 
     // Generate article via API (async, no db lock needed)
     let client = reqwest::Client::new();

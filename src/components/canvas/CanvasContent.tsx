@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import { AtomNode } from './AtomNode';
 import { ConnectionLines, Connection } from './ConnectionLines';
 import { SimulationNode } from './useForceSimulation';
@@ -18,6 +18,11 @@ export function CanvasContent({
   fadedAtomIds,
   onAtomClick,
 }: CanvasContentProps) {
+  // Stable onClick handler to prevent AtomNode re-renders
+  const handleAtomClick = useCallback((atomId: string) => {
+    onAtomClick(atomId);
+  }, [onAtomClick]);
+
   // Build position map for connection lines
   const nodePositions = useMemo(() => {
     const map = new Map<string, { x: number; y: number }>();
@@ -50,7 +55,8 @@ export function CanvasContent({
           x={node.x}
           y={node.y}
           isFaded={fadedAtomIds.has(node.id)}
-          onClick={() => onAtomClick(node.id)}
+          onClick={handleAtomClick}
+          atomId={node.id}
         />
       ))}
     </div>

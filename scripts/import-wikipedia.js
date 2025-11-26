@@ -98,16 +98,25 @@ async function fetchArticle(title) {
   }
 }
 
-async function fetchRelatedArticles(title, limit = 10) {
+async function fetchLinksFromArticle(title, limit = 10) {
   try {
+    // Use MediaWiki Action API to get links from the article
     const response = await fetch(
-      `https://en.wikipedia.org/api/rest_v1/page/related/${encodeURIComponent(title)}`
+      `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=links&pllimit=${limit}&plnamespace=0&format=json&origin=*`
     );
     if (!response.ok) return [];
 
     const data = await response.json();
-    return (data.pages || []).slice(0, limit).map((p) => p.title.replace(/ /g, '_'));
+    const pages = data.query?.pages;
+    if (!pages) return [];
+
+    // Get the first (and only) page
+    const pageId = Object.keys(pages)[0];
+    const links = pages[pageId]?.links || [];
+
+    return links.map((link) => link.title.replace(/ /g, '_'));
   } catch (error) {
+    console.error(`  Error fetching links from ${title}:`, error.message);
     return [];
   }
 }
@@ -134,10 +143,12 @@ async function importArticles(db, maxArticles = 500) {
     const { title, domain } = queue.shift();
 
     if (imported.has(title)) continue;
-    imported.add(title);
 
     const article = await fetchArticle(title);
-    if (!article || article.content.length < 100) continue;
+    if (!article || article.content.length < 20) {
+      console.log(`  Skipped: ${title} (${article ? 'too short: ' + article.content.length + ' chars' : 'fetch failed'})`);
+      continue;
+    }
 
     // Insert into database
     const now = new Date().toISOString();
@@ -152,17 +163,22 @@ async function importArticles(db, maxArticles = 500) {
         now
       );
 
+      imported.add(title);
       count++;
-      console.log(`[${count}/${maxArticles}] Imported: ${article.title} (${domain})`);
 
-      // Fetch related articles and add to queue
+      // Fetch links from this article and add to queue
       if (count < maxArticles) {
-        const related = await fetchRelatedArticles(title, 5);
-        for (const relatedTitle of related) {
-          if (!imported.has(relatedTitle)) {
-            queue.push({ title: relatedTitle, domain });
+        const links = await fetchLinksFromArticle(title, 10);
+        let addedCount = 0;
+        for (const linkedTitle of links) {
+          if (!imported.has(linkedTitle)) {
+            queue.push({ title: linkedTitle, domain });
+            addedCount++;
           }
         }
+        console.log(`[${count}/${maxArticles}] Imported: ${article.title} (${domain}) | +${addedCount} linked | Queue: ${queue.length}`);
+      } else {
+        console.log(`[${count}/${maxArticles}] Imported: ${article.title} (${domain})`);
       }
 
       // Rate limiting - be nice to Wikipedia
@@ -172,7 +188,19 @@ async function importArticles(db, maxArticles = 500) {
     }
   }
 
-  console.log(`\nImported ${count} articles total.`);
+  if (count >= maxArticles) {
+    console.log(`\nReached target of ${maxArticles} articles.`);
+  } else if (queue.length === 0) {
+    console.log(`\nQueue depleted after ${count} articles.`);
+    console.log(`This might indicate that related articles aren't being fetched properly.`);
+  }
+
+  console.log(`\nImported ${count} articles successfully.`);
+  console.log(`\nNext steps:`);
+  console.log(`1. Start the Atomic app`);
+  console.log(`2. Embeddings will process automatically in the background`);
+  console.log(`3. Watch atoms update with tags as processing completes`);
+  console.log(`\nThis may take 10-30 minutes for large batches depending on API rate limits.`);
   return count;
 }
 

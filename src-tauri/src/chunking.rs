@@ -3,8 +3,8 @@
 /// Chunking rules:
 /// - Primary split: double newlines (`\n\n`)
 /// - Secondary split (for long paragraphs): sentence boundaries (`. `, `! `, `? `)
-/// - Minimum viable chunk: 50 characters
-/// - Merge threshold: chunks under 100 chars get merged with previous
+/// - Minimum chunk size: 50 characters (smaller chunks get merged)
+/// - Merging strategy: bidirectional (forward first, then backward)
 /// - Maximum chunk: 2000 characters
 /// - Preserve original text exactly (no trimming whitespace within chunks)
 pub fn chunk_content(content: &str) -> Vec<String> {
@@ -31,20 +31,14 @@ pub fn chunk_content(content: &str) -> Vec<String> {
         }
     }
 
-    // 3. Merge very small chunks (< 10 chars) with next chunk
-    // These are things like "Hi.", "A.", etc. that shouldn't stand alone
-    chunks = merge_tiny_chunks_forward(chunks);
+    // 3. Merge small chunks (< 50 chars) with adjacent chunks
+    // First pass: merge forward (small + next)
+    chunks = merge_small_chunks_forward(chunks, 50);
+    // Second pass: merge backward (previous + small) for any remaining small chunks
+    chunks = merge_small_chunks_backward(chunks, 50);
 
     // 4. Cap chunks at 2000 chars max (hard split)
     chunks = hard_split_large_chunks(chunks);
-
-    // 5. Skip final chunks that are very small (< 10 chars)
-    // This handles trailing tiny chunks like "Hi" at the end
-    if let Some(last) = chunks.last() {
-        if last.len() < 10 {
-            chunks.pop();
-        }
-    }
 
     chunks
 }
@@ -88,9 +82,10 @@ fn split_by_sentences(paragraph: &str) -> Vec<String> {
     chunks
 }
 
-/// Merge very small chunks (< 10 chars) with the next chunk
-/// These are things like "Hi.", "A.", etc. that shouldn't stand alone
-fn merge_tiny_chunks_forward(chunks: Vec<String>) -> Vec<String> {
+/// Merge small chunks (< min_size) with the next chunk
+/// These are things like titles, headers, etc. that should be merged with context
+/// Supports cascading merges (multiple small chunks merge together)
+fn merge_small_chunks_forward(chunks: Vec<String>, min_size: usize) -> Vec<String> {
     if chunks.is_empty() {
         return chunks;
     }
@@ -100,19 +95,47 @@ fn merge_tiny_chunks_forward(chunks: Vec<String>) -> Vec<String> {
 
     for chunk in chunks {
         if let Some(prev) = pending.take() {
-            // We have a pending tiny chunk, merge it with current
-            result.push(format!("{}\n\n{}", prev, chunk));
-        } else if chunk.len() < 10 {
-            // Current chunk is very tiny (< 10 chars), hold it for potential merge with next
+            // We have a pending small chunk, merge it with current
+            let merged = format!("{}\n\n{}", prev, chunk);
+            // Check if merged result is still small - if so, keep as pending for cascade
+            if merged.len() < min_size {
+                pending = Some(merged);
+            } else {
+                result.push(merged);
+            }
+        } else if chunk.len() < min_size {
+            // Current chunk is small, hold it for merge with next
             pending = Some(chunk);
         } else {
             result.push(chunk);
         }
     }
 
-    // If there's a pending chunk at the end, add it (will be filtered by final check)
+    // If there's a pending chunk at the end, add it (will be merged backward in next pass)
     if let Some(last) = pending {
         result.push(last);
+    }
+
+    result
+}
+
+/// Merge small chunks (< min_size) with the previous chunk
+/// This handles trailing small chunks that couldn't be merged forward
+fn merge_small_chunks_backward(chunks: Vec<String>, min_size: usize) -> Vec<String> {
+    if chunks.is_empty() {
+        return chunks;
+    }
+
+    let mut result: Vec<String> = Vec::new();
+
+    for chunk in chunks {
+        if chunk.len() < min_size && !result.is_empty() {
+            // Current chunk is small and we have a previous chunk, merge backward
+            let prev = result.pop().unwrap();
+            result.push(format!("{}\n\n{}", prev, chunk));
+        } else {
+            result.push(chunk);
+        }
     }
 
     result
@@ -147,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_simple_paragraphs() {
-        let content = "First paragraph here.\n\nSecond paragraph here.";
+        let content = "First paragraph here with enough content to stand alone as a chunk.\n\nSecond paragraph here also with enough content to be its own chunk.";
         let chunks = chunk_content(content);
         assert_eq!(chunks.len(), 2);
     }
@@ -163,18 +186,22 @@ mod tests {
 
     #[test]
     fn test_small_chunks_merged() {
-        let content = "Hi.\n\nHello there, this is a longer paragraph that should stay together.";
+        let content = "Short Title\n\nThis is a longer paragraph with enough content to stand alone as a chunk.";
         let chunks = chunk_content(content);
-        // "Hi." is < 100 chars, should be merged with next
+        // "Short Title" is < 50 chars, should be merged with next
         assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("Short Title"));
+        assert!(chunks[0].contains("This is a longer paragraph"));
     }
 
     #[test]
-    fn test_skip_tiny_final_chunk() {
-        let content = "This is a good paragraph with enough content.\n\nHi";
+    fn test_merge_final_small_chunk_backward() {
+        let content = "This is a good paragraph with enough content to stand alone.\n\nTrailing fragment";
         let chunks = chunk_content(content);
-        // "Hi" is < 50 chars and is the final chunk, should be skipped
+        // "Trailing fragment" is < 50 chars, should be merged backward
         assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("good paragraph"));
+        assert!(chunks[0].contains("Trailing fragment"));
     }
 
     #[test]
@@ -192,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_preserves_whitespace() {
-        let content = "  Leading spaces preserved.  \n\n  Another paragraph with spaces.  ";
+        let content = "  Leading spaces preserved in this paragraph with enough content.  \n\n  Another paragraph with spaces and enough content to stand alone.  ";
         let chunks = chunk_content(content);
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0].starts_with("  "));
@@ -214,10 +241,14 @@ mod tests {
 
     #[test]
     fn test_multiple_small_paragraphs_merged() {
-        let content = "A.\n\nB.\n\nC.\n\nThis is a longer paragraph that has enough content to stand alone.";
+        let content = "Title\n\nSubtitle\n\nIntro\n\nThis is a longer paragraph that has enough content to stand alone as a proper chunk.";
         let chunks = chunk_content(content);
-        // Small paragraphs should be merged together
-        assert!(chunks.len() <= 2);
+        // All small paragraphs (< 50 chars) should cascade merge forward into the first substantial chunk
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("Title"));
+        assert!(chunks[0].contains("Subtitle"));
+        assert!(chunks[0].contains("Intro"));
+        assert!(chunks[0].contains("longer paragraph"));
     }
 
     #[test]
@@ -228,6 +259,25 @@ mod tests {
         assert_eq!(chunks[0].len(), 2000);
         assert_eq!(chunks[1].len(), 2000);
         assert_eq!(chunks[2].len(), 1000);
+    }
+
+    #[test]
+    fn test_backward_merge_only() {
+        let content = "This is a substantial paragraph with enough content to be a chunk.\n\nEnd";
+        let chunks = chunk_content(content);
+        // "End" (3 chars) should merge backward since there's no next chunk
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].ends_with("End"));
+    }
+
+    #[test]
+    fn test_wikipedia_title_merged() {
+        // Simulate typical Wikipedia article structure
+        let content = "Abraham Lincoln\n\nAbraham Lincoln (1809-1865) was the 16th President of the United States.";
+        let chunks = chunk_content(content);
+        // Title should merge with first paragraph
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].starts_with("Abraham Lincoln\n\n"));
     }
 }
 

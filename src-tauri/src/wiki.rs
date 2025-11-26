@@ -103,25 +103,46 @@ pub struct WikiUpdateInput {
     pub tag_name: String,
 }
 
-/// Prepare data for wiki article generation (sync, needs db connection)
-pub fn prepare_wiki_generation(
-    conn: &Connection,
+/// Prepare data for wiki article generation
+/// Restructured to avoid holding db connection across await
+pub async fn prepare_wiki_generation(
+    db: &crate::db::Database,
+    api_key: &str,
     tag_id: &str,
     tag_name: &str,
 ) -> Result<WikiGenerationInput, String> {
-    let chunks = get_relevant_chunks_for_article(conn, tag_id, tag_name, 30, 0.3)?;
-    
-    if chunks.is_empty() {
-        return Err("No content found for this tag".to_string());
-    }
+    // Generate embedding for tag name first (no db lock)
+    let client = reqwest::Client::new();
+    let embeddings = crate::embedding::generate_openrouter_embeddings_public(
+        &client,
+        api_key,
+        &vec![tag_name.to_string()],
+    )
+    .await
+    .map_err(|e| format!("Failed to generate tag embedding: {}", e))?;
 
-    let atom_count: i32 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM atom_tags WHERE tag_id = ?1",
-            [tag_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to count atoms: {}", e))?;
+    let tag_embedding = crate::embedding::f32_vec_to_blob_public(&embeddings[0]);
+
+    // Now get chunks from database with the pre-generated embedding
+    let (chunks, atom_count) = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+        let chunks = get_relevant_chunks_for_article_sync(&conn, &tag_embedding, tag_id, 30, 0.3)?;
+
+        if chunks.is_empty() {
+            return Err("No content found for this tag".to_string());
+        }
+
+        let atom_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM atom_tags WHERE tag_id = ?1",
+                [tag_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to count atoms: {}", e))?;
+
+        (chunks, atom_count)
+    };
 
     Ok(WikiGenerationInput {
         chunks,
@@ -306,23 +327,14 @@ pub async fn update_wiki_content(
     Ok(WikiArticleWithCitations { article, citations })
 }
 
-/// Get relevant chunks for wiki article generation
-/// Uses embedding similarity to rank chunks by relevance to the tag name
-pub fn get_relevant_chunks_for_article(
+/// Get relevant chunks (sync version that takes pre-generated embedding)
+fn get_relevant_chunks_for_article_sync(
     conn: &Connection,
+    tag_embedding: &[u8],
     tag_id: &str,
-    tag_name: &str,
     max_chunks: usize,
     similarity_threshold: f32,
 ) -> Result<Vec<ChunkWithContext>, String> {
-    // 1. Generate embedding for the tag name
-    let tag_embedding: Vec<u8> = conn
-        .query_row(
-            "SELECT lembed('all-MiniLM-L6-v2', ?1)",
-            [tag_name],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to generate tag embedding: {}", e))?;
 
     // 2. Get all atom IDs with this tag
     let mut atom_stmt = conn
@@ -430,8 +442,19 @@ pub async fn generate_wiki_article(
     tag_id: &str,
     tag_name: &str,
 ) -> Result<WikiArticleWithCitations, String> {
-    // Get relevant chunks
-    let chunks = get_relevant_chunks_for_article(conn, tag_id, tag_name, 30, 0.3)?;
+    // Generate embedding for tag name
+    let embeddings = crate::embedding::generate_openrouter_embeddings_public(
+        client,
+        api_key,
+        &vec![tag_name.to_string()],
+    )
+    .await
+    .map_err(|e| format!("Failed to generate tag embedding: {}", e))?;
+
+    let tag_embedding = crate::embedding::f32_vec_to_blob_public(&embeddings[0]);
+
+    // Get relevant chunks with pre-generated embedding
+    let chunks = get_relevant_chunks_for_article_sync(conn, &tag_embedding, tag_id, 30, 0.3)?;
     
     if chunks.is_empty() {
         return Err("No content found for this tag".to_string());

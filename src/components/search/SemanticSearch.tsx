@@ -7,7 +7,6 @@ export function SemanticSearch() {
     searchSemantic,
     clearSemanticSearch,
     isSearching,
-    semanticSearchResults,
   } = useAtomsStore();
 
   const [inputValue, setInputValue] = useState(semanticSearchQuery);
@@ -17,13 +16,14 @@ export function SemanticSearch() {
     const timer = setTimeout(() => {
       if (inputValue.trim()) {
         searchSemantic(inputValue);
-      } else if (semanticSearchResults !== null) {
+      } else {
         clearSemanticSearch();
       }
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [inputValue, searchSemantic, clearSemanticSearch, semanticSearchResults]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputValue]);
 
   // Handle keyboard (Escape to clear)
   const handleKeyDown = (e: React.KeyboardEvent) => {

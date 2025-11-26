@@ -1,19 +1,40 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { AtomEditor } from '../atoms/AtomEditor';
 import { AtomViewer } from '../atoms/AtomViewer';
 import { WikiViewer } from '../wiki/WikiViewer';
 import { useUIStore } from '../../stores/ui';
-import { useAtomsStore } from '../../stores/atoms';
 import { useClickOutside } from '../../hooks/useClickOutside';
 import { useKeyboard } from '../../hooks/useKeyboard';
+import type { AtomWithTags } from '../../stores/atoms';
 
 export function RightDrawer() {
   const { drawerState, closeDrawer, openDrawer } = useUIStore();
-  const { atoms } = useAtomsStore();
   const drawerRef = useRef<HTMLDivElement>(null);
 
   const { isOpen, mode, atomId, tagId, tagName } = drawerState;
-  const atom = atomId ? atoms.find((a) => a.id === atomId) : null;
+
+  const [atom, setAtom] = useState<AtomWithTags | null>(null);
+  const [isLoadingAtom, setIsLoadingAtom] = useState(false);
+
+  // Fetch atom from database when viewing
+  useEffect(() => {
+    if (mode === 'viewer' && atomId) {
+      setIsLoadingAtom(true);
+      invoke<AtomWithTags | null>('get_atom_by_id', { id: atomId })
+        .then((fetchedAtom) => {
+          setAtom(fetchedAtom);
+          setIsLoadingAtom(false);
+        })
+        .catch((error) => {
+          console.error('Failed to fetch atom:', error);
+          setAtom(null);
+          setIsLoadingAtom(false);
+        });
+    } else {
+      setAtom(null);
+    }
+  }, [mode, atomId]);
 
   // Close on click outside
   useClickOutside(drawerRef, closeDrawer, isOpen);
@@ -44,6 +65,13 @@ export function RightDrawer() {
       case 'editor':
         return <AtomEditor atomId={atomId} onClose={closeDrawer} />;
       case 'viewer':
+        if (isLoadingAtom) {
+          return (
+            <div className="flex items-center justify-center h-full text-[#888888]">
+              Loading...
+            </div>
+          );
+        }
         if (!atom) {
           return (
             <div className="flex items-center justify-center h-full text-[#888888]">

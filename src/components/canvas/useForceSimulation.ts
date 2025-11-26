@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3-force';
 import { AtomWithTags } from '../../stores/atoms';
-import { cosineSimilarity } from '../../lib/similarity';
+// import { cosineSimilarity } from '../../lib/similarity'; // Disabled with similarity force
 import { Connection } from './ConnectionLines';
 
 export interface SimulationNode extends d3.SimulationNodeDatum {
@@ -110,9 +110,6 @@ export function useForceSimulation({
       strength: conn.sharedTagCount * 0.1,
     }));
 
-    // Create similarity force
-    const similarityForce = createSimilarityForce(embeddings, 0.7);
-
     // Create simulation
     const simulation = d3
       .forceSimulation<SimulationNode>(initialNodes)
@@ -126,9 +123,9 @@ export function useForceSimulation({
           .strength((d) => d.strength)
       )
       .force('center', d3.forceCenter(CANVAS_CENTER, CANVAS_CENTER))
-      .force('similarity', similarityForce)
+      // Similarity force disabled - see commented code below for future re-enablement
       .alpha(1)
-      .alphaDecay(0.02)
+      .alphaDecay(0.05) // Faster convergence: ~150 ticks vs ~300 ticks
       .velocityDecay(0.4);
 
     // After a short time, unfix existing nodes to let them adjust
@@ -144,8 +141,9 @@ export function useForceSimulation({
     let tickCount = 0;
     simulation.on('tick', () => {
       tickCount++;
-      // Only update state every 3 ticks for performance
-      if (tickCount % 3 === 0) {
+      // Update less frequently for smoother performance
+      // 10 ticks provides good balance between smoothness and performance
+      if (tickCount % 10 === 0) {
         setNodes([...initialNodes]);
       }
     });
@@ -169,7 +167,10 @@ export function useForceSimulation({
   return { nodes, isSimulating };
 }
 
-// Custom force for semantic similarity attraction
+// PERFORMANCE: Similarity force disabled for large datasets (500+ atoms)
+// This force was causing O(n²) complexity with expensive cosine similarity calculations
+// Keeping code commented for future optimization or re-enablement
+/*
 function createSimilarityForce(
   embeddings: Map<string, number[]>,
   threshold: number = 0.7
@@ -210,6 +211,7 @@ function createSimilarityForce(
 
   return force;
 }
+*/
 
 // Helper to build connections from atoms
 export function buildConnections(atoms: AtomWithTags[]): Connection[] {
@@ -221,7 +223,7 @@ export function buildConnections(atoms: AtomWithTags[]): Connection[] {
     for (let j = i + 1; j < atoms.length; j++) {
       const sharedCount = atoms[j].tags.filter((t) => tagsA.has(t.id)).length;
 
-      if (sharedCount > 0) {
+      if (sharedCount >= 2) {
         connections.push({
           sourceId: atoms[i].id,
           targetId: atoms[j].id,

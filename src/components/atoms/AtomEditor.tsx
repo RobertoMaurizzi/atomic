@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -18,7 +19,7 @@ interface AtomEditorProps {
 }
 
 export function AtomEditor({ atomId, onClose, onSaved }: AtomEditorProps) {
-  const { atoms, createAtom, updateAtom } = useAtomsStore();
+  const { createAtom, updateAtom } = useAtomsStore();
   const { fetchTags } = useTagsStore();
   const { settings, fetchSettings } = useSettingsStore();
 
@@ -27,14 +28,34 @@ export function AtomEditor({ atomId, onClose, onSaved }: AtomEditorProps) {
   const [selectedTags, setSelectedTags] = useState<Tag[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [existingAtom, setExistingAtom] = useState<AtomWithTags | null>(null);
+  const [isLoadingAtom, setIsLoadingAtom] = useState(false);
 
   const isEditing = atomId !== null;
-  const existingAtom = isEditing ? atoms.find((a) => a.id === atomId) : null;
   const autoTaggingEnabled = settings.auto_tagging_enabled !== 'false' && !!settings.openrouter_api_key;
 
   useEffect(() => {
     fetchSettings();
   }, [fetchSettings]);
+
+  // Fetch existing atom from database when editing
+  useEffect(() => {
+    if (isEditing && atomId) {
+      setIsLoadingAtom(true);
+      invoke<AtomWithTags | null>('get_atom_by_id', { id: atomId })
+        .then((fetchedAtom) => {
+          setExistingAtom(fetchedAtom);
+          setIsLoadingAtom(false);
+        })
+        .catch((error) => {
+          console.error('Failed to fetch atom:', error);
+          setExistingAtom(null);
+          setIsLoadingAtom(false);
+        });
+    } else {
+      setExistingAtom(null);
+    }
+  }, [isEditing, atomId]);
 
   useEffect(() => {
     if (existingAtom) {
@@ -75,6 +96,15 @@ export function AtomEditor({ atomId, onClose, onSaved }: AtomEditorProps) {
       setIsSaving(false);
     }
   };
+
+  // Show loading state when fetching atom for editing
+  if (isEditing && isLoadingAtom) {
+    return (
+      <div className="flex items-center justify-center h-full p-4 text-[#888888]">
+        Loading atom...
+      </div>
+    );
+  }
 
   const canSave = content.trim().length > 0 && !urlError;
 

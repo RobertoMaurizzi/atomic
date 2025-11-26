@@ -6,7 +6,8 @@ interface AtomNodeProps {
   x: number;
   y: number;
   isFaded: boolean;
-  onClick: () => void;
+  onClick: (atomId: string) => void;
+  atomId: string;
 }
 
 export const AtomNode = memo(function AtomNode({
@@ -15,6 +16,7 @@ export const AtomNode = memo(function AtomNode({
   y,
   isFaded,
   onClick,
+  atomId,
 }: AtomNodeProps) {
   // Get first line of content, truncated to ~50 characters
   const displayContent = getDisplayContent(atom.content);
@@ -30,7 +32,7 @@ export const AtomNode = memo(function AtomNode({
         transform: 'translate(-50%, -50%)',
         width: '160px',
       }}
-      onClick={onClick}
+      onClick={() => onClick(atomId)}
     >
       <div
         className={`

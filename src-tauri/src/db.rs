@@ -259,10 +259,11 @@ impl Database {
     fn create_vec_chunks_table(conn: &Connection) -> Result<(), String> {
         // Create vec_chunks virtual table for sqlite-vec similarity search
         // This uses the vec0 module from sqlite-vec for vector similarity
+        // Using 1536 dimensions for OpenRouter's text-embedding-3-small model
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                 chunk_id TEXT PRIMARY KEY,
-                embedding float[384]
+                embedding float[1536]
             )",
             [],
         )

@@ -48,7 +48,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_all_atoms,
-            commands::get_atom,
+            commands::get_atom_by_id,
             commands::create_atom,
             commands::update_atom,
             commands::delete_atom,
