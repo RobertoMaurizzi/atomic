@@ -452,7 +452,13 @@ Content is chunked for optimal embedding generation:
 ### Layout
 - Left Panel: 250px fixed width
 - Main View: Flexible, fills remaining space
-- Right Drawer: 500px max or 40% of screen, slides from right as overlay
+- Right Drawer: 50vw width (min 400px, max 800px), slides from right as overlay
+
+### Tag Display
+- Tags are collapsed by default in AtomViewer and TagSelector
+- Maximum 5 tags shown initially
+- "+N more" button expands to show all tags
+- "Show less" button collapses back to 5 tags
 
 ### Animations
 - Drawer slide: 200ms ease-out
