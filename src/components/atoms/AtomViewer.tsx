@@ -24,11 +24,10 @@ export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
   const { setSelectedTag, closeDrawer, openDrawer } = useUIStore();
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [showAllTags, setShowAllTags] = useState(false);
   const [metadataExpanded, setMetadataExpanded] = useState(false);
 
   const MAX_VISIBLE_TAGS = 5;
-  const visibleTags = showAllTags ? atom.tags : atom.tags.slice(0, MAX_VISIBLE_TAGS);
+  const visibleTags = atom.tags.slice(0, MAX_VISIBLE_TAGS);
   const hiddenCount = atom.tags.length - MAX_VISIBLE_TAGS;
 
   const handleDelete = async () => {
@@ -132,7 +131,7 @@ export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
                     }}
                   />
                 ))}
-                {!showAllTags && hiddenCount > 0 && !metadataExpanded && (
+                {hiddenCount > 0 && !metadataExpanded && (
                   <span className="text-sm text-[#888888] px-2">
                     +{hiddenCount} more
                   </span>
