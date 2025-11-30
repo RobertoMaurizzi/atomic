@@ -49,6 +49,10 @@ export function ChatHeader({ conversation, onBack }: ChatHeaderProps) {
             onChange={(e) => setEditedTitle(e.target.value)}
             onBlur={handleTitleSave}
             onKeyDown={handleTitleKeyDown}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             className="flex-1 bg-[#1e1e1e] border border-[#3d3d3d] rounded px-2 py-1 text-[#dcddde] focus:outline-none focus:border-[#7c3aed]"
             autoFocus
           />

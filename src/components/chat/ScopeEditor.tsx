@@ -204,6 +204,10 @@ export function ScopeEditor({ conversation }: ScopeEditorProps) {
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Search tags..."
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             className="w-40 bg-[#1e1e1e] border border-[#7c3aed] rounded px-2 py-1 text-sm text-[#dcddde] focus:outline-none placeholder-[#666666]"
           />
 

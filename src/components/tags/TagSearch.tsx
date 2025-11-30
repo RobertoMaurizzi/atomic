@@ -56,6 +56,10 @@ export function TagSearch() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search tags..."
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           className="w-full px-3 py-1.5 pl-8 bg-[#2d2d2d] border border-[#3d3d3d] rounded-md text-sm text-[#dcddde] placeholder-[#888888] focus:outline-none focus:ring-1 focus:ring-[#7c3aed] focus:border-transparent"
         />
         <svg

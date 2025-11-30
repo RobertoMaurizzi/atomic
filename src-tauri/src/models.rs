@@ -220,42 +220,4 @@ pub struct ChatCitation {
     pub relevance_score: Option<f32>,
 }
 
-/// Retrieval step for transparency UI
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetrievalStep {
-    pub step_number: i32,
-    pub tool_name: String,
-    pub query: String,
-    pub results_count: i32,
-    pub timestamp: String,
-}
-
-// ==================== Chat Event Payloads ====================
-
-/// Streaming delta event
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatStreamEvent {
-    pub conversation_id: String,
-    pub message_id: String,
-    pub event_type: String, // "delta", "tool_start", "tool_complete", "done"
-    pub content_delta: Option<String>,
-    pub tool_call: Option<ChatToolCall>,
-    pub retrieval_step: Option<RetrievalStep>,
-}
-
-/// Chat completion event
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompleteEvent {
-    pub conversation_id: String,
-    pub message_id: String,
-    pub message: ChatMessageWithContext,
-}
-
-/// Chat error event
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatErrorEvent {
-    pub conversation_id: String,
-    pub message_id: Option<String>,
-    pub error: String,
-}
 
