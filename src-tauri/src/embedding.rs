@@ -460,6 +460,20 @@ async fn process_embeddings(
     // Re-acquire connection for final operations
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
+    // Compute semantic edges for this atom
+    // Use threshold of 0.5 to capture more relationships, max 15 edges per atom
+    match compute_semantic_edges_for_atom(&conn, atom_id, 0.5, 15) {
+        Ok(edge_count) => {
+            if edge_count > 0 {
+                eprintln!("Created {} semantic edges for atom {}", edge_count, atom_id);
+            }
+        }
+        Err(e) => {
+            // Log warning but don't fail the embedding process
+            eprintln!("Warning: Failed to compute semantic edges for atom {}: {}", atom_id, e);
+        }
+    }
+
     // Set status to complete
     conn.execute(
         "UPDATE atoms SET embedding_status = 'complete' WHERE id = ?1",
@@ -483,6 +497,147 @@ pub fn distance_to_similarity(distance: f32) -> f32 {
     // distance = 0 means identical vectors (similarity = 1)
     // distance = 2 means opposite vectors (similarity = 0)
     (1.0 - (distance / 2.0)).max(0.0).min(1.0)
+}
+
+/// Compute semantic edges for an atom after embedding generation
+/// Finds similar atoms based on vector similarity and stores edges in semantic_edges table
+pub fn compute_semantic_edges_for_atom(
+    conn: &rusqlite::Connection,
+    atom_id: &str,
+    threshold: f32,   // Default: 0.5 - lower than UI threshold to capture more relationships
+    max_edges: i32,   // Default: 15 per atom
+) -> Result<i32, String> {
+    use std::collections::HashMap;
+
+    // First, delete existing edges for this atom (bidirectional)
+    conn.execute(
+        "DELETE FROM semantic_edges WHERE source_atom_id = ?1 OR target_atom_id = ?1",
+        [atom_id],
+    )
+    .map_err(|e| format!("Failed to delete existing edges: {}", e))?;
+
+    // Get all chunks for the given atom
+    let mut stmt = conn
+        .prepare("SELECT id, chunk_index, embedding FROM atom_chunks WHERE atom_id = ?1")
+        .map_err(|e| format!("Failed to prepare chunk query: {}", e))?;
+
+    let source_chunks: Vec<(String, i32, Vec<u8>)> = stmt
+        .query_map([atom_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|e| format!("Failed to query chunks: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect chunks: {}", e))?;
+
+    if source_chunks.is_empty() {
+        return Ok(0);
+    }
+
+    // Map to store best similarity per target atom_id
+    // Value: (similarity, source_chunk_index, target_chunk_index)
+    let mut atom_similarities: HashMap<String, (f32, i32, i32)> = HashMap::new();
+
+    // For each source chunk, find similar chunks
+    for (_, source_chunk_index, embedding_blob) in &source_chunks {
+        // Query vec_chunks for similar chunks
+        let mut vec_stmt = conn
+            .prepare(
+                "SELECT chunk_id, distance
+                 FROM vec_chunks
+                 WHERE embedding MATCH ?1
+                 ORDER BY distance
+                 LIMIT ?2",
+            )
+            .map_err(|e| format!("Failed to prepare vec query: {}", e))?;
+
+        let similar_chunks: Vec<(String, f32)> = vec_stmt
+            .query_map(rusqlite::params![embedding_blob, max_edges * 5], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|e| format!("Failed to query similar chunks: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect similar chunks: {}", e))?;
+
+        // For each similar chunk, check threshold and track best match per atom
+        for (chunk_id, distance) in similar_chunks {
+            let similarity = distance_to_similarity(distance);
+
+            if similarity < threshold {
+                continue;
+            }
+
+            // Get the parent atom_id and chunk index for this chunk
+            let chunk_info: Result<(String, i32), _> = conn.query_row(
+                "SELECT atom_id, chunk_index FROM atom_chunks WHERE id = ?1",
+                [&chunk_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            );
+
+            if let Ok((target_atom_id, target_chunk_index)) = chunk_info {
+                // Exclude the source atom itself
+                if target_atom_id == atom_id {
+                    continue;
+                }
+
+                // Keep highest similarity per target atom
+                let entry = atom_similarities.entry(target_atom_id.clone());
+                match entry {
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        if similarity > e.get().0 {
+                            e.insert((similarity, *source_chunk_index, target_chunk_index));
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((similarity, *source_chunk_index, target_chunk_index));
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by similarity and take top N
+    let mut edges: Vec<(String, f32, i32, i32)> = atom_similarities
+        .into_iter()
+        .map(|(target_id, (sim, src_idx, tgt_idx))| (target_id, sim, src_idx, tgt_idx))
+        .collect();
+
+    edges.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    edges.truncate(max_edges as usize);
+
+    // Insert edges (store bidirectionally with consistent ordering)
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut edges_created = 0;
+
+    for (target_atom_id, similarity, source_chunk_index, target_chunk_index) in edges {
+        // Use consistent ordering: smaller ID is source
+        let (src_id, tgt_id, src_chunk, tgt_chunk) = if atom_id < target_atom_id.as_str() {
+            (atom_id.to_string(), target_atom_id.clone(), source_chunk_index, target_chunk_index)
+        } else {
+            (target_atom_id.clone(), atom_id.to_string(), target_chunk_index, source_chunk_index)
+        };
+
+        let edge_id = Uuid::new_v4().to_string();
+
+        // Insert or update (using INSERT OR REPLACE due to UNIQUE constraint)
+        let result = conn.execute(
+            "INSERT OR REPLACE INTO semantic_edges
+             (id, source_atom_id, target_atom_id, similarity_score, source_chunk_index, target_chunk_index, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                &edge_id,
+                &src_id,
+                &tgt_id,
+                similarity,
+                src_chunk,
+                tgt_chunk,
+                &now,
+            ],
+        );
+
+        if result.is_ok() {
+            edges_created += 1;
+        }
+    }
+
+    Ok(edges_created)
 }
 
 #[cfg(test)]

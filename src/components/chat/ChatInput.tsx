@@ -25,6 +25,10 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           className="flex-1 resize-none bg-[#1e1e1e] border border-[#3d3d3d] rounded-lg px-4 py-3 text-[#dcddde] placeholder-[#666666] focus:outline-none focus:border-[#7c3aed] disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             minHeight: '48px',

@@ -1,7 +1,6 @@
 use reqwest::Client;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 // OpenRouter API request/response types
 #[derive(Serialize)]
@@ -185,7 +184,7 @@ pub async fn extract_tags_from_chunk(
             json_schema: JsonSchemaWrapper {
                 name: "extraction_result".to_string(),
                 strict: true,
-                schema: schema,
+                schema,
             },
         },
         temperature: 0.1,
@@ -257,55 +256,6 @@ pub async fn extract_tags_from_chunk(
     }
 
     Err(last_error)
-}
-
-/// Get the tag tree as JSON for the LLM prompt
-pub fn get_tag_tree_json(conn: &Connection) -> Result<String, String> {
-    #[derive(Serialize)]
-    struct TagNode {
-        id: String,
-        name: String,
-        parent_id: Option<String>,
-        children: Vec<TagNode>,
-    }
-
-    // Get all tags
-    let mut stmt = conn
-        .prepare("SELECT id, name, parent_id FROM tags ORDER BY name")
-        .map_err(|e| format!("Failed to prepare tag query: {}", e))?;
-
-    let tags: Vec<(String, String, Option<String>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .map_err(|e| format!("Failed to query tags: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect tags: {}", e))?;
-
-    if tags.is_empty() {
-        return Ok(r#"{"tags": []}"#.to_string());
-    }
-
-    // Build tree structure
-    fn build_tree(tags: &[(String, String, Option<String>)], parent_id: Option<&str>) -> Vec<TagNode> {
-        tags.iter()
-            .filter(|(_, _, pid)| pid.as_deref() == parent_id)
-            .map(|(id, name, pid)| TagNode {
-                id: id.clone(),
-                name: name.clone(),
-                parent_id: pid.clone(),
-                children: build_tree(tags, Some(id)),
-            })
-            .collect()
-    }
-
-    let tree = build_tree(&tags, None);
-    
-    #[derive(Serialize)]
-    struct TagTreeWrapper {
-        tags: Vec<TagNode>,
-    }
-
-    serde_json::to_string(&TagTreeWrapper { tags: tree })
-        .map_err(|e| format!("Failed to serialize tag tree: {}", e))
 }
 
 /// Get simplified tag tree for LLM (names only, no IDs)
@@ -400,40 +350,6 @@ pub fn tag_names_to_ids(conn: &Connection, names: &[String]) -> Result<TagLookup
     })
 }
 
-/// Convert tag IDs to names
-/// Used to show tag names to users or for debugging
-pub fn tag_ids_to_names(conn: &Connection, ids: &[String]) -> Result<Vec<String>, String> {
-    let mut tag_names = Vec::new();
-
-    for id in ids {
-        let name: Option<String> = conn
-            .query_row("SELECT name FROM tags WHERE id = ?1", [id], |row| row.get(0))
-            .ok();
-
-        if let Some(n) = name {
-            tag_names.push(n);
-        }
-    }
-
-    Ok(tag_names)
-}
-
-/// Deduplicate tag names case-insensitively
-/// Keeps first occurrence of each unique name (case-insensitive)
-pub fn deduplicate_tag_names(names: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut result = Vec::new();
-
-    for name in names {
-        let lower = name.to_lowercase();
-        if seen.insert(lower) {
-            result.push(name);
-        }
-    }
-
-    result
-}
-
 /// Get tag ID by name, or create it if it doesn't exist
 /// Also ensures parent tag exists if parent_name is provided (recursive)
 pub fn get_or_create_tag(
@@ -449,13 +365,12 @@ pub fn get_or_create_tag(
     }
 
     // Try to find existing tag
-    if let Some(existing_id) = conn
+    if let Ok(existing_id) = conn
         .query_row(
             "SELECT id FROM tags WHERE LOWER(name) = LOWER(?1)",
             [trimmed_name],
             |row| row.get(0),
         )
-        .ok()
     {
         return Ok(existing_id);
     }
@@ -626,7 +541,7 @@ pub async fn consolidate_atom_tags(
             json_schema: JsonSchemaWrapper {
                 name: "consolidation_result".to_string(),
                 strict: true,
-                schema: schema,
+                schema,
             },
         },
         temperature: 0.1,

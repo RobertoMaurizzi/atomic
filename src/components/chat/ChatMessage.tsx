@@ -15,7 +15,7 @@ export function ChatMessage({ message, isStreaming = false, onViewAtom }: ChatMe
   const isAssistant = message.role === 'assistant';
 
   const [activeCitation, setActiveCitation] = useState<ChatCitation | null>(null);
-  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const [anchorRect, setAnchorRect] = useState<{ top: number; left: number; bottom: number; width: number } | null>(null);
 
   // Create a map of citation index to citation object
   const citationMap = new Map(
@@ -23,13 +23,14 @@ export function ChatMessage({ message, isStreaming = false, onViewAtom }: ChatMe
   );
 
   const handleCitationClick = (citation: ChatCitation, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
     setActiveCitation(citation);
-    setAnchorEl(element);
+    setAnchorRect({ top: rect.top, left: rect.left, bottom: rect.bottom, width: rect.width });
   };
 
   const handleClosePopover = () => {
     setActiveCitation(null);
-    setAnchorEl(null);
+    setAnchorRect(null);
   };
 
   const handleViewAtom = (atomId: string) => {
@@ -191,10 +192,10 @@ export function ChatMessage({ message, isStreaming = false, onViewAtom }: ChatMe
       </div>
 
       {/* Citation popover */}
-      {activeCitation && anchorEl && (
+      {activeCitation && anchorRect && (
         <CitationPopover
           citation={activeCitation}
-          anchorEl={anchorEl}
+          anchorRect={anchorRect}
           onClose={handleClosePopover}
           onViewAtom={handleViewAtom}
         />

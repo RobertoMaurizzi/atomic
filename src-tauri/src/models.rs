@@ -220,42 +220,53 @@ pub struct ChatCitation {
     pub relevance_score: Option<f32>,
 }
 
-/// Retrieval step for transparency UI
+// ==================== Semantic Graph Types ====================
+
+/// Pre-computed semantic edge between two atoms
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetrievalStep {
-    pub step_number: i32,
-    pub tool_name: String,
-    pub query: String,
-    pub results_count: i32,
-    pub timestamp: String,
+pub struct SemanticEdge {
+    pub id: String,
+    pub source_atom_id: String,
+    pub target_atom_id: String,
+    pub similarity_score: f32,
+    pub source_chunk_index: Option<i32>,
+    pub target_chunk_index: Option<i32>,
+    pub created_at: String,
 }
 
-// ==================== Chat Event Payloads ====================
-
-/// Streaming delta event
+/// Neighborhood graph for local graph view
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatStreamEvent {
-    pub conversation_id: String,
-    pub message_id: String,
-    pub event_type: String, // "delta", "tool_start", "tool_complete", "done"
-    pub content_delta: Option<String>,
-    pub tool_call: Option<ChatToolCall>,
-    pub retrieval_step: Option<RetrievalStep>,
+pub struct NeighborhoodGraph {
+    pub center_atom_id: String,
+    pub atoms: Vec<NeighborhoodAtom>,
+    pub edges: Vec<NeighborhoodEdge>,
 }
 
-/// Chat completion event
+/// Atom in a neighborhood graph with depth info
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompleteEvent {
-    pub conversation_id: String,
-    pub message_id: String,
-    pub message: ChatMessageWithContext,
+pub struct NeighborhoodAtom {
+    #[serde(flatten)]
+    pub atom: AtomWithTags,
+    pub depth: i32, // 0 = center, 1 = direct connection, 2 = friend-of-friend
 }
 
-/// Chat error event
+/// Edge in a neighborhood graph (combines tag and semantic connections)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatErrorEvent {
-    pub conversation_id: String,
-    pub message_id: Option<String>,
-    pub error: String,
+pub struct NeighborhoodEdge {
+    pub source_id: String,
+    pub target_id: String,
+    pub edge_type: String, // "tag", "semantic", "both"
+    pub strength: f32,     // Combined strength (0-1)
+    pub shared_tag_count: i32,
+    pub similarity_score: Option<f32>,
 }
+
+/// Atom cluster assignment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtomCluster {
+    pub cluster_id: i32,
+    pub atom_ids: Vec<String>,
+    pub dominant_tags: Vec<String>,
+}
+
 

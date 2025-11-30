@@ -4,11 +4,14 @@ import { ConnectionLines, Connection } from './ConnectionLines';
 import { SimulationNode } from './useForceSimulation';
 
 const CANVAS_SIZE = 5000;
+const HUB_THRESHOLD = 8; // Atoms with this many or more connections are hubs
 
 interface CanvasContentProps {
   nodes: SimulationNode[];
   connections: Connection[];
   fadedAtomIds: Set<string>;
+  connectionCounts: Record<string, number>;
+  highlightedAtomId: string | null;
   onAtomClick: (atomId: string) => void;
 }
 
@@ -16,6 +19,8 @@ export function CanvasContent({
   nodes,
   connections,
   fadedAtomIds,
+  connectionCounts,
+  highlightedAtomId,
   onAtomClick,
 }: CanvasContentProps) {
   // Stable onClick handler to prevent AtomNode re-renders
@@ -23,7 +28,7 @@ export function CanvasContent({
     onAtomClick(atomId);
   }, [onAtomClick]);
 
-  // Build position map for connection lines
+  // Build position map for connection lines and clusters
   const nodePositions = useMemo(() => {
     const map = new Map<string, { x: number; y: number }>();
     for (const node of nodes) {
@@ -31,6 +36,17 @@ export function CanvasContent({
     }
     return map;
   }, [nodes]);
+
+  // Identify hub atoms
+  const hubAtomIds = useMemo(() => {
+    const hubs = new Set<string>();
+    for (const [atomId, count] of Object.entries(connectionCounts)) {
+      if (count >= HUB_THRESHOLD) {
+        hubs.add(atomId);
+      }
+    }
+    return hubs;
+  }, [connectionCounts]);
 
   return (
     <div
@@ -55,6 +71,9 @@ export function CanvasContent({
           x={node.x}
           y={node.y}
           isFaded={fadedAtomIds.has(node.id)}
+          isHub={hubAtomIds.has(node.id)}
+          isHighlighted={node.id === highlightedAtomId}
+          connectionCount={connectionCounts[node.id] || 0}
           onClick={handleAtomClick}
           atomId={node.id}
         />
@@ -62,4 +81,3 @@ export function CanvasContent({
     </div>
   );
 }
-

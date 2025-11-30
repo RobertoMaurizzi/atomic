@@ -1,43 +1,160 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
+import { TransformWrapper, TransformComponent, useControls } from 'react-zoom-pan-pinch';
 import { AtomWithTags } from '../../stores/atoms';
 import { CanvasContent } from './CanvasContent';
 import { CanvasControls } from './CanvasControls';
+import { Connection } from './ConnectionLines';
 import { useForceSimulation, buildConnections, SimulationNode } from './useForceSimulation';
 import {
   getAtomPositions,
   saveAtomPositions,
   getAtomsWithEmbeddings,
+  getSemanticEdges,
+  getConnectionCounts,
   AtomPosition,
+  SemanticEdge,
 } from '../../lib/tauri';
 
 const CANVAS_CENTER = 2500;
+
+// Helper component to zoom to a highlighted atom
+interface ZoomToHighlightProps {
+  atomId: string | null;
+  nodePositions: Map<string, { x: number; y: number }>;
+  onComplete: () => void;
+}
+
+function ZoomToHighlight({ atomId, nodePositions, onComplete }: ZoomToHighlightProps) {
+  const { setTransform } = useControls();
+  const hasZoomedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!atomId || hasZoomedRef.current === atomId) return;
+
+    const pos = nodePositions.get(atomId);
+    if (!pos) return;
+
+    // Calculate transform to center on the atom
+    // Assuming viewport is ~800x600
+    const scale = 1;
+    const x = -pos.x * scale + 400;
+    const y = -pos.y * scale + 300;
+
+    // Animate to position
+    setTransform(x, y, scale, 500, 'easeOut');
+    hasZoomedRef.current = atomId;
+
+    // Clear highlight after animation
+    const timer = setTimeout(() => {
+      onComplete();
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, [atomId, nodePositions, setTransform, onComplete]);
+
+  return null;
+}
 
 interface CanvasViewProps {
   atoms: AtomWithTags[];
   selectedTagId: string | null;
   searchResultIds: string[] | null; // atom IDs matching search, null = not searching
+  highlightedAtomId: string | null;
   onAtomClick: (atomId: string) => void;
+  onHighlightClear: () => void;
+}
+
+// Connection display options
+export interface ConnectionOptions {
+  showTagConnections: boolean;
+  showSemanticConnections: boolean;
+  minSimilarity: number;
 }
 
 export function CanvasView({
   atoms,
   selectedTagId,
   searchResultIds,
+  highlightedAtomId,
   onAtomClick,
+  onHighlightClear,
 }: CanvasViewProps) {
   const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(
     new Map()
   );
   const [embeddings, setEmbeddings] = useState<Map<string, number[]>>(new Map());
+  const [semanticEdges, setSemanticEdges] = useState<SemanticEdge[]>([]);
+  const [connectionCounts, setConnectionCounts] = useState<Record<string, number>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const hasLoadedRef = useRef(false);
 
-  // Build connections from shared tags
-  const connections = useMemo(() => buildConnections(atoms), [atoms]);
+  // Connection display options
+  const [connectionOptions, setConnectionOptions] = useState<ConnectionOptions>({
+    showTagConnections: true,
+    showSemanticConnections: true,
+    minSimilarity: 0.5,
+  });
 
-  // Load positions and embeddings on mount
+  // Build tag-based connections
+  const tagConnections = useMemo(() => buildConnections(atoms), [atoms]);
+
+  // Build hybrid connections (tag + semantic)
+  const connections = useMemo(() => {
+    const { showTagConnections, showSemanticConnections, minSimilarity } = connectionOptions;
+
+    // Start with tag connections if enabled
+    const tagConns = showTagConnections
+      ? tagConnections.map(c => ({
+          ...c,
+          type: 'tag' as const,
+          strength: Math.min(c.sharedTagCount * 0.2, 0.6),
+          similarityScore: null as number | null,
+        }))
+      : [];
+
+    // Add semantic connections if enabled
+    const semanticConns = showSemanticConnections
+      ? semanticEdges
+          .filter(e => e.similarity_score >= minSimilarity)
+          .map(e => ({
+            sourceId: e.source_atom_id,
+            targetId: e.target_atom_id,
+            sharedTagCount: 0,
+            type: 'semantic' as const,
+            strength: e.similarity_score,
+            similarityScore: e.similarity_score,
+          }))
+      : [];
+
+    // Merge: if both tag and semantic exist between same atoms, mark as 'both'
+    const connectionMap = new Map<string, Connection>();
+
+    for (const conn of tagConns) {
+      const key = [conn.sourceId, conn.targetId].sort().join('-');
+      connectionMap.set(key, conn);
+    }
+
+    for (const conn of semanticConns) {
+      const key = [conn.sourceId, conn.targetId].sort().join('-');
+      const existing = connectionMap.get(key);
+      if (existing) {
+        // Merge: both tag and semantic
+        connectionMap.set(key, {
+          ...existing,
+          type: 'both',
+          strength: Math.min((existing.strength || 0.3) + conn.strength, 1) / 1.5,
+          similarityScore: conn.similarityScore,
+        });
+      } else {
+        connectionMap.set(key, conn);
+      }
+    }
+
+    return Array.from(connectionMap.values());
+  }, [tagConnections, semanticEdges, connectionOptions]);
+
+  // Load positions, embeddings, and semantic edges on mount
   useEffect(() => {
     if (hasLoadedRef.current) return;
     hasLoadedRef.current = true;
@@ -47,10 +164,12 @@ export function CanvasView({
         setIsLoading(true);
         setError(null);
 
-        // Load positions and embeddings in parallel
-        const [positionsData, embeddingsData] = await Promise.all([
+        // Load positions, embeddings, semantic edges, and connection counts in parallel
+        const [positionsData, embeddingsData, edgesData, countsData] = await Promise.all([
           getAtomPositions(),
           getAtomsWithEmbeddings(),
+          getSemanticEdges(0.5),
+          getConnectionCounts(0.5).catch(() => ({} as Record<string, number>)),
         ]);
 
         // Convert positions to map
@@ -68,6 +187,10 @@ export function CanvasView({
           }
         }
         setEmbeddings(embMap);
+
+        // Store semantic edges and connection counts
+        setSemanticEdges(edgesData);
+        setConnectionCounts(countsData);
 
         setIsLoading(false);
       } catch (err) {
@@ -138,6 +261,15 @@ export function CanvasView({
 
     return faded;
   }, [atoms, selectedTagId, searchResultIds]);
+
+  // Build node positions map for zoom-to-highlight
+  const nodePositions = useMemo(() => {
+    const map = new Map<string, { x: number; y: number }>();
+    for (const node of nodes) {
+      map.set(node.id, { x: node.x, y: node.y });
+    }
+    return map;
+  }, [nodes]);
 
   // Calculate initial transform to center on content
   const initialTransform = useMemo(() => {
@@ -254,9 +386,26 @@ export function CanvasView({
         minScale={0.1}
         maxScale={2}
         limitToBounds={false}
-        panning={{ velocityDisabled: true }}
+        smooth
+        panning={{ velocityDisabled: false }}
+        wheel={{ smoothStep: 0.006, step: 0.6 }}
+        pinch={{ step: 20 }}
+        velocityAnimation={{
+          sensitivity: 1,
+          animationTime: 200,
+          animationType: 'easeOut',
+          equalToMove: true,
+        }}
       >
-        <CanvasControls />
+        <ZoomToHighlight
+          atomId={highlightedAtomId}
+          nodePositions={nodePositions}
+          onComplete={onHighlightClear}
+        />
+        <CanvasControls
+          connectionOptions={connectionOptions}
+          onConnectionOptionsChange={setConnectionOptions}
+        />
         <TransformComponent
           wrapperStyle={{
             width: '100%',
@@ -267,6 +416,8 @@ export function CanvasView({
             nodes={nodes}
             connections={connections}
             fadedAtomIds={fadedAtomIds}
+            connectionCounts={connectionCounts}
+            highlightedAtomId={highlightedAtomId}
             onAtomClick={onAtomClick}
           />
         </TransformComponent>

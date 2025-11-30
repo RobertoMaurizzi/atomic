@@ -13,6 +13,13 @@ interface DrawerState {
   conversationId: string | null;  // For chat mode
 }
 
+interface LocalGraphState {
+  isOpen: boolean;
+  centerAtomId: string | null;
+  depth: 1 | 2;
+  navigationHistory: string[];  // For breadcrumb navigation
+}
+
 export interface LoadingOperation {
   id: string;
   message: string;
@@ -25,6 +32,10 @@ interface UIStore {
   viewMode: ViewMode;
   searchQuery: string;
   loadingOperations: LoadingOperation[];
+  // Local graph state
+  localGraph: LocalGraphState;
+  highlightedAtomId: string | null;
+  // Actions
   setSelectedTag: (tagId: string | null) => void;
   openDrawer: (mode: DrawerMode, atomId?: string) => void;
   openWikiDrawer: (tagId: string, tagName: string) => void;
@@ -34,6 +45,15 @@ interface UIStore {
   setSearchQuery: (query: string) => void;
   addLoadingOperation: (id: string, message: string) => void;
   removeLoadingOperation: (id: string) => void;
+  // Local graph actions
+  openLocalGraph: (atomId: string, depth?: 1 | 2) => void;
+  navigateLocalGraph: (atomId: string) => void;
+  goBackLocalGraph: () => void;
+  closeLocalGraph: () => void;
+  setLocalGraphDepth: (depth: 1 | 2) => void;
+  setHighlightedAtom: (atomId: string | null) => void;
+  // Canvas navigation
+  locateOnCanvas: (atomId: string) => void;
 }
 
 export const useUIStore = create<UIStore>()(
@@ -51,6 +71,13 @@ export const useUIStore = create<UIStore>()(
       viewMode: 'canvas',  // Default to canvas view
       searchQuery: '',
       loadingOperations: [],
+      localGraph: {
+        isOpen: false,
+        centerAtomId: null,
+        depth: 1,
+        navigationHistory: [],
+      },
+      highlightedAtomId: null,
 
       setSelectedTag: (tagId: string | null) => set({ selectedTagId: tagId }),
 
@@ -113,6 +140,77 @@ export const useUIStore = create<UIStore>()(
       removeLoadingOperation: (id: string) =>
         set((state) => ({
           loadingOperations: state.loadingOperations.filter((op) => op.id !== id),
+        })),
+
+      // Local graph actions
+      openLocalGraph: (atomId: string, depth: 1 | 2 = 1) =>
+        set({
+          localGraph: {
+            isOpen: true,
+            centerAtomId: atomId,
+            depth,
+            navigationHistory: [atomId],
+          },
+        }),
+
+      navigateLocalGraph: (atomId: string) =>
+        set((state) => ({
+          localGraph: {
+            ...state.localGraph,
+            centerAtomId: atomId,
+            navigationHistory: [...state.localGraph.navigationHistory, atomId],
+          },
+        })),
+
+      goBackLocalGraph: () =>
+        set((state) => {
+          const history = [...state.localGraph.navigationHistory];
+          history.pop(); // Remove current
+          const previousAtomId = history[history.length - 1] || null;
+          return {
+            localGraph: {
+              ...state.localGraph,
+              centerAtomId: previousAtomId,
+              navigationHistory: history,
+              isOpen: history.length > 0,
+            },
+          };
+        }),
+
+      closeLocalGraph: () =>
+        set({
+          localGraph: {
+            isOpen: false,
+            centerAtomId: null,
+            depth: 1,
+            navigationHistory: [],
+          },
+        }),
+
+      setLocalGraphDepth: (depth: 1 | 2) =>
+        set((state) => ({
+          localGraph: {
+            ...state.localGraph,
+            depth,
+          },
+        })),
+
+      setHighlightedAtom: (atomId: string | null) =>
+        set({ highlightedAtomId: atomId }),
+
+      // Canvas navigation - switch to canvas view and highlight the atom
+      locateOnCanvas: (atomId: string) =>
+        set((state) => ({
+          viewMode: 'canvas',
+          highlightedAtomId: atomId,
+          drawerState: {
+            ...state.drawerState,
+            isOpen: false,
+          },
+          localGraph: {
+            ...state.localGraph,
+            isOpen: false,
+          },
         })),
     }),
     {

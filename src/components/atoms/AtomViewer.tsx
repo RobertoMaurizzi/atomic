@@ -21,10 +21,19 @@ interface AtomViewerProps {
 export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
   const { deleteAtom } = useAtomsStore();
   const { fetchTags } = useTagsStore();
-  const { setSelectedTag, closeDrawer, openDrawer } = useUIStore();
+  const { setSelectedTag, closeDrawer, openDrawer, openLocalGraph, locateOnCanvas } = useUIStore();
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [metadataExpanded, setMetadataExpanded] = useState(false);
+
+  const handleViewNeighborhood = () => {
+    closeDrawer();
+    openLocalGraph(atom.id);
+  };
+
+  const handleLocateOnCanvas = () => {
+    locateOnCanvas(atom.id);
+  };
 
   const MAX_VISIBLE_TAGS = 5;
   const visibleTags = atom.tags.slice(0, MAX_VISIBLE_TAGS);
@@ -67,6 +76,28 @@ export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
           </svg>
         </button>
         <div className="flex items-center gap-2">
+          {atom.embedding_status === 'complete' && (
+            <>
+              <Button variant="ghost" size="sm" onClick={handleLocateOnCanvas} title="Locate on canvas">
+                <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Locate
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleViewNeighborhood} title="View neighborhood graph">
+                <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="3" strokeWidth={2} />
+                  <circle cx="5" cy="8" r="2" strokeWidth={2} />
+                  <circle cx="19" cy="8" r="2" strokeWidth={2} />
+                  <circle cx="7" cy="18" r="2" strokeWidth={2} />
+                  <circle cx="17" cy="18" r="2" strokeWidth={2} />
+                  <path strokeLinecap="round" strokeWidth={2} d="M9.5 10.5L6.5 9M14.5 10.5L17.5 9M10 14L8 16.5M14 14L16 16.5" />
+                </svg>
+                Graph
+              </Button>
+            </>
+          )}
           <Button variant="ghost" size="sm" onClick={onEdit}>
             <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -192,9 +223,13 @@ export function AtomViewer({ atom, onClose, onEdit }: AtomViewerProps) {
         )}
       </div>
 
-      {/* Related Atoms - only show if embedding is complete */}
+      {/* Related Atoms & Neighborhood - only show if embedding is complete */}
       {atom.embedding_status === 'complete' && (
-        <RelatedAtoms atomId={atom.id} onAtomClick={handleRelatedAtomClick} />
+        <RelatedAtoms
+          atomId={atom.id}
+          onAtomClick={handleRelatedAtomClick}
+          onViewGraph={handleViewNeighborhood}
+        />
       )}
 
       {/* Delete Confirmation Modal */}

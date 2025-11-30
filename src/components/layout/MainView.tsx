@@ -14,7 +14,7 @@ export function MainView() {
     semanticSearchQuery,
     retryEmbedding,
   } = useAtomsStore();
-  const { viewMode, setViewMode, searchQuery, selectedTagId, openDrawer, openChatDrawer } = useUIStore();
+  const { viewMode, setViewMode, searchQuery, selectedTagId, openDrawer, openChatDrawer, highlightedAtomId, setHighlightedAtom } = useUIStore();
 
   // Determine what to display
   const displayAtoms = useMemo(() => {
@@ -83,14 +83,21 @@ export function MainView() {
         <div className="flex items-center bg-[#2d2d2d] rounded-md border border-[#3d3d3d]">
           <button
             onClick={() => setViewMode('canvas')}
-            className={`px-3 py-1.5 text-sm rounded-l-md transition-colors ${
+            className={`p-2 rounded-l-md transition-colors ${
               viewMode === 'canvas'
                 ? 'bg-[#7c3aed] text-white'
                 : 'text-[#888888] hover:text-[#dcddde]'
             }`}
             title="Canvas view"
           >
-            Canvas
+            {/* Scatter/spatial layout icon */}
+            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+              <circle cx="5" cy="5" r="2" />
+              <circle cx="19" cy="8" r="2" />
+              <circle cx="12" cy="12" r="2" />
+              <circle cx="6" cy="18" r="2" />
+              <circle cx="17" cy="17" r="2" />
+            </svg>
           </button>
           <button
             onClick={() => setViewMode('grid')}
@@ -130,12 +137,10 @@ export function MainView() {
           </button>
         </div>
 
-        {/* Atom count - only show for grid/list views */}
-        {viewMode !== 'canvas' && (
-          <span className="text-sm text-[#888888]">
-            {displayAtoms.length} atom{displayAtoms.length !== 1 ? 's' : ''}
-          </span>
-        )}
+        {/* Atom count */}
+        <span className="text-sm text-[#888888]">
+          {displayAtoms.length} atom{displayAtoms.length !== 1 ? 's' : ''}
+        </span>
 
         {/* Spacer */}
         <div className="flex-1" />
@@ -173,7 +178,9 @@ export function MainView() {
             atoms={atoms}
             selectedTagId={selectedTagId}
             searchResultIds={searchResultIds}
+            highlightedAtomId={highlightedAtomId}
             onAtomClick={handleAtomClick}
+            onHighlightClear={() => setHighlightedAtom(null)}
           />
         ) : viewMode === 'grid' ? (
           <div className="h-full overflow-y-auto">

@@ -13,19 +13,20 @@ interface WikiArticleContentProps {
 
 export function WikiArticleContent({ article, citations, onViewAtom }: WikiArticleContentProps) {
   const [activeCitation, setActiveCitation] = useState<WikiCitation | null>(null);
-  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const [anchorRect, setAnchorRect] = useState<{ top: number; left: number; bottom: number; width: number } | null>(null);
 
   // Create a map of citation index to citation object
   const citationMap = new Map(citations.map(c => [c.citation_index, c]));
 
   const handleCitationClick = (citation: WikiCitation, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
     setActiveCitation(citation);
-    setAnchorEl(element);
+    setAnchorRect({ top: rect.top, left: rect.left, bottom: rect.bottom, width: rect.width });
   };
 
   const handleClosePopover = () => {
     setActiveCitation(null);
-    setAnchorEl(null);
+    setAnchorRect(null);
   };
 
   // Process text to replace [N] patterns with CitationLink components
@@ -94,10 +95,10 @@ export function WikiArticleContent({ article, citations, onViewAtom }: WikiArtic
       </div>
 
       {/* Citation popover */}
-      {activeCitation && anchorEl && (
+      {activeCitation && anchorRect && (
         <CitationPopover
           citation={activeCitation}
-          anchorEl={anchorEl}
+          anchorRect={anchorRect}
           onClose={handleClosePopover}
           onViewAtom={onViewAtom}
         />

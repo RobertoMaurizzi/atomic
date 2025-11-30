@@ -3,8 +3,6 @@ use rusqlite::Connection;
 use sqlite_vec::sqlite3_vec_init;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use chrono;
-use uuid;
 
 pub struct Database {
     pub conn: Mutex<Connection>,
@@ -289,6 +287,31 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_chat_tool_calls_message ON chat_tool_calls(message_id);
             CREATE INDEX IF NOT EXISTS idx_chat_citations_message ON chat_citations(message_id);
             CREATE INDEX IF NOT EXISTS idx_chat_citations_atom ON chat_citations(atom_id);
+
+            -- Semantic edges for graph visualization (pre-computed during embedding)
+            CREATE TABLE IF NOT EXISTS semantic_edges (
+                id TEXT PRIMARY KEY,
+                source_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
+                target_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
+                similarity_score REAL NOT NULL,
+                source_chunk_index INTEGER,
+                target_chunk_index INTEGER,
+                created_at TEXT NOT NULL,
+                UNIQUE(source_atom_id, target_atom_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_semantic_edges_source ON semantic_edges(source_atom_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_atom_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_edges_score ON semantic_edges(similarity_score DESC);
+
+            -- Atom cluster assignments for visual grouping
+            CREATE TABLE IF NOT EXISTS atom_clusters (
+                atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
+                cluster_id INTEGER NOT NULL,
+                computed_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_atom_clusters_cluster ON atom_clusters(cluster_id);
             "#,
         )
         .map_err(|e| format!("Failed to run migrations: {}", e))?;

@@ -52,23 +52,6 @@ struct FunctionDef {
     parameters: serde_json::Value,
 }
 
-#[derive(Deserialize, Debug)]
-struct OpenRouterResponse {
-    choices: Vec<Choice>,
-}
-
-#[derive(Deserialize, Debug)]
-struct Choice {
-    message: MessageResponse,
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct MessageResponse {
-    content: Option<String>,
-    tool_calls: Option<Vec<ToolCallResponse>>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct ToolCallResponse {
     id: String,
@@ -93,11 +76,13 @@ struct StreamingResponse {
 #[derive(Deserialize, Debug)]
 struct StreamingChoice {
     delta: StreamingDelta,
+    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default)]
 struct StreamingDelta {
+    #[allow(dead_code)]
     role: Option<String>,
     content: Option<String>,
     tool_calls: Option<Vec<StreamingToolCall>>,
@@ -154,12 +139,6 @@ struct ChatToolComplete {
 struct ChatComplete {
     conversation_id: String,
     message: ChatMessageWithContext,
-}
-
-#[derive(Serialize, Clone)]
-struct ChatError {
-    conversation_id: String,
-    error: String,
 }
 
 // ==================== Tool Definitions ====================
@@ -480,7 +459,7 @@ async fn run_agent_loop(
                     "search_atoms" => {
                         let query = tool_args["query"].as_str().unwrap_or("");
                         let limit = tool_args["limit"].as_i64().unwrap_or(5) as i32;
-                        match execute_search_atoms(&*db, query, limit, &ctx.scope_tag_ids).await {
+                        match execute_search_atoms(&db, query, limit, &ctx.scope_tag_ids).await {
                             Ok(results) => {
                                 let count = results.len() as i32;
                                 // Store citation info
@@ -512,7 +491,7 @@ async fn run_agent_loop(
                     }
                     "get_atom" => {
                         let atom_id = tool_args["atom_id"].as_str().unwrap_or("");
-                        match execute_get_atom(&*db, atom_id) {
+                        match execute_get_atom(&db, atom_id) {
                             Ok(Some(content)) => (content, 1),
                             Ok(None) => ("Atom not found".to_string(), 0),
                             Err(e) => (format!("Error: {}", e), 0),
@@ -780,10 +759,10 @@ pub async fn send_chat_message(
     };
 
     // Save user message
-    let (user_message_id, user_message_index) = {
+    {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        save_message(&conn, &conversation_id, "user", &content)?
-    };
+        save_message(&conn, &conversation_id, "user", &content)?;
+    }
 
     // Get conversation context
     let (messages, scope_tag_ids, scope_description) = {
@@ -824,7 +803,7 @@ pub async fn send_chat_message(
     let mut result = run_agent_loop(app_handle.clone(), db_arc, api_key, model, ctx).await?;
 
     // Save assistant message
-    let (assistant_message_id, assistant_message_index) = {
+    {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let (msg_id, msg_idx) = save_message(&conn, &conversation_id, "assistant", &result.message.content)?;
 
@@ -843,9 +822,7 @@ pub async fn send_chat_message(
             citation.message_id = msg_id.clone();
         }
         save_citations(&conn, &msg_id, &result.citations)?;
-
-        (msg_id, msg_idx)
-    };
+    }
 
     // Emit completion event
     let _ = app_handle.emit(

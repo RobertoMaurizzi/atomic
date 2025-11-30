@@ -1,6 +1,7 @@
 mod agent;
 mod chat;
 mod chunking;
+mod clustering;
 mod commands;
 mod db;
 mod embedding;
@@ -90,6 +91,14 @@ pub fn run() {
             commands::get_atom_positions,
             commands::save_atom_positions,
             commands::get_atoms_with_embeddings,
+            // Semantic graph commands
+            commands::get_semantic_edges,
+            commands::get_atom_neighborhood,
+            commands::rebuild_semantic_edges,
+            // Clustering commands
+            commands::compute_clusters,
+            commands::get_clusters,
+            commands::get_connection_counts,
             // Chat commands
             chat::create_conversation,
             chat::get_conversations,
