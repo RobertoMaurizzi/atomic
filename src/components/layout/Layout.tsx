@@ -20,8 +20,10 @@ export function Layout() {
 
   // Command palette state
   const commandPaletteOpen = useUIStore((state) => state.commandPaletteOpen);
+  const commandPaletteInitialQuery = useUIStore((state) => state.commandPaletteInitialQuery);
   const toggleCommandPalette = useUIStore((state) => state.toggleCommandPalette);
   const closeCommandPalette = useUIStore((state) => state.closeCommandPalette);
+  const openCommandPalette = useUIStore((state) => state.openCommandPalette);
   const openDrawer = useUIStore((state) => state.openDrawer);
 
   // Global keyboard shortcuts
@@ -43,6 +45,20 @@ export function Layout() {
       // Skip other shortcuts if input is active
       if (isInputActive) return;
 
+      // "/" to open command palette in search mode
+      if (e.key === '/' && !commandPaletteOpen) {
+        e.preventDefault();
+        openCommandPalette('/');
+        return;
+      }
+
+      // "#" to open command palette in tag filter mode
+      if (e.key === '#' && !commandPaletteOpen) {
+        e.preventDefault();
+        openCommandPalette('#');
+        return;
+      }
+
       // Cmd+N or Ctrl+N to create new atom (only when palette is closed)
       if ((e.metaKey || e.ctrlKey) && e.key === 'n' && !commandPaletteOpen) {
         e.preventDefault();
@@ -53,7 +69,7 @@ export function Layout() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleCommandPalette, openDrawer, commandPaletteOpen]);
+  }, [toggleCommandPalette, openCommandPalette, openDrawer, commandPaletteOpen]);
 
   // Listen for custom settings event from command palette
   useEffect(() => {
@@ -137,7 +153,7 @@ export function Layout() {
   // Show loading while checking
   if (isSetupRequired === null) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[var(--color-bg-main)]">
+      <div className="flex h-screen items-center justify-center bg-[var(--color-bg-main)] pt-[28px]">
         <span className="text-[var(--color-text-secondary)]">Loading...</span>
       </div>
     );
@@ -146,7 +162,7 @@ export function Layout() {
   // Show setup modal if required
   if (isSetupRequired) {
     return (
-      <div className="flex h-screen overflow-hidden bg-[var(--color-bg-main)]">
+      <div className="flex h-screen overflow-hidden bg-[var(--color-bg-main)] pt-[28px]">
         <SettingsModal
           isOpen={true}
           onClose={handleSetupComplete}
@@ -165,6 +181,7 @@ export function Layout() {
       <CommandPalette
         isOpen={commandPaletteOpen}
         onClose={closeCommandPalette}
+        initialQuery={commandPaletteInitialQuery}
       />
       <SettingsModal
         isOpen={settingsOpen}

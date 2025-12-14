@@ -3,7 +3,6 @@ import { AtomGrid } from '../atoms/AtomGrid';
 import { AtomList } from '../atoms/AtomList';
 import { CanvasView } from '../canvas/CanvasView';
 import { FAB } from '../ui/FAB';
-import { SemanticSearch } from '../search/SemanticSearch';
 import { useAtomsStore, SemanticSearchResult } from '../../stores/atoms';
 import { useUIStore } from '../../stores/ui';
 
@@ -15,7 +14,7 @@ export function MainView() {
     searchMode,
     retryEmbedding,
   } = useAtomsStore();
-  const { viewMode, setViewMode, searchQuery, selectedTagId, openDrawer, openChatDrawer, openWikiListDrawer, highlightedAtomId, setHighlightedAtom } = useUIStore();
+  const { viewMode, setViewMode, searchQuery, selectedTagId, openDrawer, openChatDrawer, openWikiListDrawer, openCommandPalette, highlightedAtomId, setHighlightedAtom } = useUIStore();
 
   // Determine what to display
   const displayAtoms = useMemo(() => {
@@ -93,30 +92,25 @@ export function MainView() {
     openWikiListDrawer();
   };
 
+  const handleOpenSearch = () => {
+    openCommandPalette('/');
+  };
+
   return (
     <main className="flex-1 flex flex-col h-full bg-[var(--color-bg-main)] overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center gap-4 px-4 py-3 border-b border-[var(--color-border)]">
-        {/* Semantic Search */}
-        <SemanticSearch />
-
-        {/* Atom count */}
-        <span className="text-sm text-[var(--color-text-secondary)] shrink-0">
-          {displayAtoms.length} atom{displayAtoms.length !== 1 ? 's' : ''}
-        </span>
-
+      {/* Titlebar row - aligned with traffic lights */}
+      <div className="h-[52px] flex items-center gap-3 px-4 flex-shrink-0">
         {/* View Mode Toggle */}
-        <div className="flex items-center bg-[var(--color-bg-card)] rounded-md border border-[var(--color-border)] shrink-0 ml-auto">
+        <div className="flex items-center bg-[var(--color-bg-card)] rounded-md border border-[var(--color-border)] shrink-0">
           <button
             onClick={() => setViewMode('canvas')}
-            className={`p-2 rounded-l-md transition-colors ${
+            className={`p-1.5 rounded-l-md transition-colors ${
               viewMode === 'canvas'
                 ? 'bg-[var(--color-accent)] text-white'
                 : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
             }`}
             title="Canvas view"
           >
-            {/* Scatter/spatial layout icon */}
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
               <circle cx="5" cy="5" r="2" />
               <circle cx="19" cy="8" r="2" />
@@ -127,7 +121,7 @@ export function MainView() {
           </button>
           <button
             onClick={() => setViewMode('grid')}
-            className={`p-2 transition-colors ${
+            className={`p-1.5 transition-colors ${
               viewMode === 'grid'
                 ? 'bg-[var(--color-accent)] text-white'
                 : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
@@ -145,7 +139,7 @@ export function MainView() {
           </button>
           <button
             onClick={() => setViewMode('list')}
-            className={`p-2 rounded-r-md transition-colors ${
+            className={`p-1.5 rounded-r-md transition-colors ${
               viewMode === 'list'
                 ? 'bg-[var(--color-accent)] text-white'
                 : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
@@ -163,30 +157,47 @@ export function MainView() {
           </button>
         </div>
 
+        {/* Search button */}
+        <button
+          onClick={handleOpenSearch}
+          className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+          title="Search atoms"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </button>
+
         {/* Wiki button */}
         <button
           onClick={handleOpenWiki}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md bg-[var(--color-bg-card)] border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-accent)] transition-colors"
+          className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
           title="Open wiki articles"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
           </svg>
-          Wiki
         </button>
 
         {/* Chat button */}
         <button
           onClick={handleOpenChat}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md bg-[var(--color-bg-card)] border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-accent)] transition-colors"
+          className="p-1.5 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
           title="Open conversations"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
           </svg>
-          Chat
         </button>
-      </header>
+
+        {/* Drag region - fills available space */}
+        <div data-tauri-drag-region className="flex-1 h-full drag-region" />
+
+        {/* Atom count */}
+        <span className="text-sm text-[var(--color-text-secondary)] shrink-0">
+          {displayAtoms.length} atom{displayAtoms.length !== 1 ? 's' : ''}
+        </span>
+      </div>
 
       {/* Search results header - only show for grid/list views */}
       {isSemanticSearch && viewMode !== 'canvas' && (

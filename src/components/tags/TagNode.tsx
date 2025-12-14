@@ -1,4 +1,4 @@
-import { useState, MouseEvent } from 'react';
+import { useEffect, useRef, MouseEvent } from 'react';
 import { TagWithCount } from '../../stores/tags';
 import { useUIStore } from '../../stores/ui';
 
@@ -11,14 +11,25 @@ interface TagNodeProps {
 }
 
 export function TagNode({ tag, level, selectedTagId, onSelect, onContextMenu }: TagNodeProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const { openWikiDrawer, openChatDrawer } = useUIStore();
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const { openWikiDrawer, openChatDrawer, expandedTagIds, toggleTagExpanded } = useUIStore();
   const hasChildren = tag.children && tag.children.length > 0;
   const isSelected = selectedTagId === tag.id;
+  const isExpanded = expandedTagIds.has(tag.id);
+
+  // Scroll into view when selected
+  useEffect(() => {
+    if (isSelected && nodeRef.current) {
+      // Use a small delay to ensure the DOM has updated after expansion
+      setTimeout(() => {
+        nodeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 50);
+    }
+  }, [isSelected]);
 
   const handleToggle = (e: MouseEvent) => {
     e.stopPropagation();
-    setIsExpanded(!isExpanded);
+    toggleTagExpanded(tag.id);
   };
 
   const handleContextMenu = (e: MouseEvent) => {
@@ -39,6 +50,7 @@ export function TagNode({ tag, level, selectedTagId, onSelect, onContextMenu }: 
   return (
     <div>
       <div
+        ref={nodeRef}
         className={`group flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${
           isSelected
             ? 'bg-[var(--color-accent)]/20 text-[var(--color-text-primary)]'

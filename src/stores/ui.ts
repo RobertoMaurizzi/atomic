@@ -29,6 +29,7 @@ export interface LoadingOperation {
 
 interface UIStore {
   selectedTagId: string | null;
+  expandedTagIds: Set<string>;  // Tags that should be expanded in sidebar
   drawerState: DrawerState;
   viewMode: ViewMode;
   searchQuery: string;
@@ -38,8 +39,11 @@ interface UIStore {
   highlightedAtomId: string | null;
   // Command palette state
   commandPaletteOpen: boolean;
+  commandPaletteInitialQuery: string;
   // Actions
   setSelectedTag: (tagId: string | null) => void;
+  expandTagPath: (tagIds: string[]) => void;  // Expand all tags in path
+  toggleTagExpanded: (tagId: string) => void;
   openDrawer: (mode: DrawerMode, atomId?: string, highlightText?: string) => void;
   openWikiDrawer: (tagId: string, tagName: string) => void;
   openWikiListDrawer: () => void;
@@ -59,7 +63,7 @@ interface UIStore {
   // Canvas navigation
   locateOnCanvas: (atomId: string) => void;
   // Command palette actions
-  openCommandPalette: () => void;
+  openCommandPalette: (initialQuery?: string) => void;
   closeCommandPalette: () => void;
   toggleCommandPalette: () => void;
 }
@@ -68,6 +72,7 @@ export const useUIStore = create<UIStore>()(
   persist(
     (set) => ({
       selectedTagId: null,
+      expandedTagIds: new Set<string>(),
       drawerState: {
         isOpen: false,
         mode: 'viewer',
@@ -88,8 +93,25 @@ export const useUIStore = create<UIStore>()(
       },
       highlightedAtomId: null,
       commandPaletteOpen: false,
+      commandPaletteInitialQuery: '',
 
       setSelectedTag: (tagId: string | null) => set({ selectedTagId: tagId }),
+
+      expandTagPath: (tagIds: string[]) =>
+        set((state) => ({
+          expandedTagIds: new Set([...state.expandedTagIds, ...tagIds]),
+        })),
+
+      toggleTagExpanded: (tagId: string) =>
+        set((state) => {
+          const newSet = new Set(state.expandedTagIds);
+          if (newSet.has(tagId)) {
+            newSet.delete(tagId);
+          } else {
+            newSet.add(tagId);
+          }
+          return { expandedTagIds: newSet };
+        }),
 
       openDrawer: (mode: DrawerMode, atomId?: string, highlightText?: string) =>
         set({
@@ -241,10 +263,19 @@ export const useUIStore = create<UIStore>()(
         })),
 
       // Command palette actions
-      openCommandPalette: () => set({ commandPaletteOpen: true }),
-      closeCommandPalette: () => set({ commandPaletteOpen: false }),
+      openCommandPalette: (initialQuery?: string) => set({
+        commandPaletteOpen: true,
+        commandPaletteInitialQuery: initialQuery || ''
+      }),
+      closeCommandPalette: () => set({
+        commandPaletteOpen: false,
+        commandPaletteInitialQuery: ''
+      }),
       toggleCommandPalette: () =>
-        set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
+        set((state) => ({
+          commandPaletteOpen: !state.commandPaletteOpen,
+          commandPaletteInitialQuery: state.commandPaletteOpen ? '' : state.commandPaletteInitialQuery
+        })),
     }),
     {
       name: 'atomic-ui-storage',

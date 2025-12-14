@@ -28,36 +28,34 @@ interface EmbeddingsResetPayload {
 }
 
 export function useEmbeddingEvents() {
-  const updateAtomStatus = useAtomsStore((s) => s.updateAtomStatus);
-  const fetchTags = useTagsStore((s) => s.fetchTags);
-  const fetchAtoms = useAtomsStore((s) => s.fetchAtoms);
-  const addAtomToStore = useAtomsStore((s) => s.addAtom);
-  const addLoadingOperation = useUIStore((s) => s.addLoadingOperation);
-  const removeLoadingOperation = useUIStore((s) => s.removeLoadingOperation);
-
+  // Setup event listeners once on mount
+  // Use getState() inside callbacks to get latest store functions
+  // This avoids re-registering listeners when store state changes
   useEffect(() => {
     // Listen for atom-created events (from HTTP API / browser extension)
     const unlistenAtomCreated = listen<AtomWithTags>('atom-created', (event) => {
       console.log('Atom created via HTTP API:', event.payload);
-      addAtomToStore(event.payload);
+      useAtomsStore.getState().addAtom(event.payload);
     });
 
     // Listen for embedding-complete events (fast, embedding only)
     const unlistenEmbeddingComplete = listen<EmbeddingCompletePayload>('embedding-complete', (event) => {
       console.log('Embedding complete event:', event.payload);
-      updateAtomStatus(event.payload.atom_id, event.payload.status);
+      useAtomsStore.getState().updateAtomStatus(event.payload.atom_id, event.payload.status);
     });
 
     // Listen for tagging-complete events (slower, has tag info)
     const unlistenTaggingComplete = listen<TaggingCompletePayload>('tagging-complete', (event) => {
       console.log('Tagging complete event:', event.payload);
 
+      const { addLoadingOperation, removeLoadingOperation } = useUIStore.getState();
+
       // If new tags were created, refresh the tag tree
       if (event.payload.new_tags_created && event.payload.new_tags_created.length > 0) {
         console.log('New tags created:', event.payload.new_tags_created);
         const opId = `fetch-tags-${Date.now()}`;
         addLoadingOperation(opId, 'Refreshing tags...');
-        fetchTags().finally(() => removeLoadingOperation(opId));
+        useTagsStore.getState().fetchTags().finally(() => removeLoadingOperation(opId));
       }
 
       // If tags were extracted, refresh atoms to show updated tags
@@ -65,17 +63,18 @@ export function useEmbeddingEvents() {
         console.log('Tags extracted:', event.payload.tags_extracted);
         const opId = `fetch-atoms-${Date.now()}`;
         addLoadingOperation(opId, 'Updating atoms...');
-        fetchAtoms().finally(() => removeLoadingOperation(opId));
+        useAtomsStore.getState().fetchAtoms().finally(() => removeLoadingOperation(opId));
       }
     });
 
     // Listen for embeddings-reset events (provider/model change triggers re-embedding)
     const unlistenEmbeddingsReset = listen<EmbeddingsResetPayload>('embeddings-reset', (event) => {
       console.log('Embeddings reset event:', event.payload);
+      const { addLoadingOperation, removeLoadingOperation } = useUIStore.getState();
       // Re-fetch atoms to show updated pending status
       const opId = `fetch-atoms-reset-${Date.now()}`;
       addLoadingOperation(opId, `Re-embedding ${event.payload.pending_count} atoms...`);
-      fetchAtoms().finally(() => removeLoadingOperation(opId));
+      useAtomsStore.getState().fetchAtoms().finally(() => removeLoadingOperation(opId));
     });
 
     return () => {
@@ -84,5 +83,5 @@ export function useEmbeddingEvents() {
       unlistenTaggingComplete.then(fn => fn());
       unlistenEmbeddingsReset.then(fn => fn());
     };
-  }, [updateAtomStatus, fetchTags, fetchAtoms, addAtomToStore, addLoadingOperation, removeLoadingOperation]);
+  }, []); // Empty deps - only run once on mount
 }

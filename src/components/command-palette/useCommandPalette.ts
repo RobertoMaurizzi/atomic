@@ -14,9 +14,10 @@ const SEARCH_DEBOUNCE_MS = 300;
 interface UseCommandPaletteOptions {
   isOpen: boolean;
   onClose: () => void;
+  initialQuery?: string;
 }
 
-export function useCommandPalette({ isOpen, onClose }: UseCommandPaletteOptions) {
+export function useCommandPalette({ isOpen, onClose, initialQuery = '' }: UseCommandPaletteOptions) {
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<PaletteMode>('commands');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -43,13 +44,20 @@ export function useCommandPalette({ isOpen, onClose }: UseCommandPaletteOptions)
   // Reset state when palette opens/closes
   useEffect(() => {
     if (isOpen) {
-      setQuery('');
-      setMode('commands');
+      setQuery(initialQuery);
       setSelectedIndex(0);
       setSearchResults([]);
       setIsSearching(false);
+      // Set mode based on initial query
+      if (initialQuery.startsWith('/')) {
+        setMode('search');
+      } else if (initialQuery.startsWith('#')) {
+        setMode('tags');
+      } else {
+        setMode('commands');
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, initialQuery]);
 
   // Detect mode from query prefix
   useEffect(() => {
@@ -282,6 +290,37 @@ export function useCommandPalette({ isOpen, onClose }: UseCommandPaletteOptions)
           const tag = filteredTags[index];
           if (tag) {
             onClose();
+
+            // Build ancestor path for expansion
+            const ancestorIds: string[] = [];
+            let currentParentId = tag.parent_id;
+
+            // Flatten all tags to find parents
+            const flattenTags = (tagList: TagWithCount[]): Map<string, TagWithCount> => {
+              const map = new Map<string, TagWithCount>();
+              const traverse = (list: TagWithCount[]) => {
+                for (const t of list) {
+                  map.set(t.id, t);
+                  if (t.children?.length) traverse(t.children);
+                }
+              };
+              traverse(tagList);
+              return map;
+            };
+            const tagMap = flattenTags(tags);
+
+            // Walk up the tree to collect ancestor IDs
+            while (currentParentId) {
+              ancestorIds.push(currentParentId);
+              const parentTag = tagMap.get(currentParentId);
+              currentParentId = parentTag?.parent_id || null;
+            }
+
+            // Expand ancestors before selecting (so the tag is visible)
+            if (ancestorIds.length > 0) {
+              useUIStore.getState().expandTagPath(ancestorIds);
+            }
+
             // Filter by this tag
             useUIStore.getState().setSelectedTag(tag.id);
             useAtomsStore.getState().fetchAtomsByTag(tag.id);
@@ -290,7 +329,7 @@ export function useCommandPalette({ isOpen, onClose }: UseCommandPaletteOptions)
         }
       }
     },
-    [mode, query, recentCommands, filteredCommands, searchResults, filteredTags, recordRecentCommand, onClose]
+    [mode, query, recentCommands, filteredCommands, searchResults, filteredTags, tags, recordRecentCommand, onClose]
   );
 
   return {

@@ -9,9 +9,10 @@ import { TagResults } from './TagResults';
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
+  initialQuery?: string;
 }
 
-export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
+export function CommandPalette({ isOpen, onClose, initialQuery = '' }: CommandPaletteProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -26,7 +27,7 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
     filteredTags,
     handleKeyDown,
     handleSelect,
-  } = useCommandPalette({ isOpen, onClose });
+  } = useCommandPalette({ isOpen, onClose, initialQuery });
 
   // Close on click outside
   const handleOverlayClick = (e: React.MouseEvent) => {
