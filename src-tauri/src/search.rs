@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
-use crate::embedding::{distance_to_similarity, f32_vec_to_blob_public, generate_openrouter_embeddings_public};
+use crate::embedding::{distance_to_similarity, f32_vec_to_blob_public};
 use crate::models::{Atom, AtomWithTags, SemanticSearchResult, Tag};
+use crate::providers::{create_embedding_provider, EmbeddingConfig, ProviderConfig};
 use crate::settings::get_all_settings;
 
 /// Search mode - determines which search algorithm(s) to use
@@ -266,19 +267,19 @@ async fn search_semantic_chunks(
     db: &Database,
     options: &SearchOptions,
 ) -> Result<Vec<ChunkResult>, String> {
-    // Get API key
-    let api_key = {
+    // Get provider config from settings
+    let provider_config = {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let settings_map = get_all_settings(&conn)?;
-        settings_map
-            .get("openrouter_api_key")
-            .cloned()
-            .ok_or("OpenRouter API key not configured. Search requires API key.")?
+        ProviderConfig::from_settings(&settings_map)
     };
 
-    // Generate embedding for query
-    let client = reqwest::Client::new();
-    let embeddings = generate_openrouter_embeddings_public(&client, &api_key, &[options.query.clone()])
+    // Create embedding provider and generate query embedding
+    let provider = create_embedding_provider(&provider_config)
+        .map_err(|e| format!("Failed to create embedding provider: {}", e))?;
+    let embedding_config = EmbeddingConfig::new(provider_config.embedding_model());
+    let embeddings = provider
+        .embed_batch(&[options.query.clone()], &embedding_config)
         .await
         .map_err(|e| format!("Failed to generate query embedding: {}", e))?;
 
@@ -345,14 +346,11 @@ async fn search_hybrid_chunks(
     db: &Database,
     options: &SearchOptions,
 ) -> Result<Vec<ChunkResult>, String> {
-    // Get API key
-    let api_key = {
+    // Get provider config from settings
+    let provider_config = {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let settings_map = get_all_settings(&conn)?;
-        settings_map
-            .get("openrouter_api_key")
-            .cloned()
-            .ok_or("OpenRouter API key not configured. Search requires API key.")?
+        ProviderConfig::from_settings(&settings_map)
     };
 
     let fetch_limit = options.limit * 5;
@@ -400,8 +398,11 @@ async fn search_hybrid_chunks(
     };
 
     // Phase 2: Semantic search
-    let client = reqwest::Client::new();
-    let embeddings = generate_openrouter_embeddings_public(&client, &api_key, &[options.query.clone()])
+    let provider = create_embedding_provider(&provider_config)
+        .map_err(|e| format!("Failed to create embedding provider: {}", e))?;
+    let embedding_config = EmbeddingConfig::new(provider_config.embedding_model());
+    let embeddings = provider
+        .embed_batch(&[options.query.clone()], &embedding_config)
         .await
         .map_err(|e| format!("Failed to generate query embedding: {}", e))?;
 
