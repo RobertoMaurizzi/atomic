@@ -1,3 +1,5 @@
+//! Provider error types
+
 use std::fmt;
 
 /// Errors that can occur during provider operations

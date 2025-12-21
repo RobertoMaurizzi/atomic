@@ -43,7 +43,7 @@ impl AtomicMcpServer {
         let conn = self
             .db
             .new_connection()
-            .map_err(|e| ErrorData::internal_error(e, None))?;
+            .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
 
         // Escape query for FTS5
         let escaped_query: String = params.query
@@ -113,7 +113,7 @@ impl AtomicMcpServer {
         let conn = self
             .db
             .new_connection()
-            .map_err(|e| ErrorData::internal_error(e, None))?;
+            .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
 
         let atom_result: Result<(String, String, String, String), rusqlite::Error> = conn
             .query_row(
@@ -175,7 +175,7 @@ impl AtomicMcpServer {
         let conn = self
             .db
             .new_connection()
-            .map_err(|e| ErrorData::internal_error(e, None))?;
+            .map_err(|e| ErrorData::internal_error(format!("{}", e), None))?;
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();

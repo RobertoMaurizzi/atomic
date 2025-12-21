@@ -1,3 +1,5 @@
+//! Provider trait definitions
+
 use crate::providers::error::ProviderError;
 use crate::providers::types::{
     CompletionResponse, GenerationParams, Message, StreamDelta, ToolDefinition,

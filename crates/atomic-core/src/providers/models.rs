@@ -1,3 +1,5 @@
+//! Model discovery and capabilities caching
+
 use crate::providers::ollama::{get_embedding_dimension, is_embedding_model};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

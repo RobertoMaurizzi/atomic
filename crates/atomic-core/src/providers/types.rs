@@ -1,3 +1,5 @@
+//! Provider type definitions
+
 use serde::{Deserialize, Serialize};
 
 /// Role of a message in a conversation

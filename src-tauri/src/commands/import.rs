@@ -2,7 +2,7 @@
 
 use crate::db::Database;
 use crate::embedding::process_embedding_batch;
-use crate::obsidian::{discover_notes, parse_obsidian_note, HierarchicalTag, DEFAULT_EXCLUDES};
+use crate::obsidian::{discover_notes, parse_obsidian_note, DEFAULT_EXCLUDES};
 use chrono::Utc;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};

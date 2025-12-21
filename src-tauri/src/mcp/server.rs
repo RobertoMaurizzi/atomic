@@ -45,7 +45,7 @@ impl AtomicMcpServer {
         // Use unified search module
         let options = crate::search::SearchOptions::new(&params.query, crate::search::SearchMode::Semantic, limit)
             .with_threshold(threshold);
-        let results = crate::search::search_atoms(&self.db, options)
+        let results = crate::search::search_atoms(self.db.as_core(), options)
             .await
             .map_err(|e| ErrorData::internal_error(e, None))?;
 

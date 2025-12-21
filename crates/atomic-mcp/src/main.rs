@@ -31,7 +31,7 @@ async fn main() {
     }
 
     // Open database
-    let db = match db::Database::new(&db_path) {
+    let db = match db::open_database(&db_path) {
         Ok(db) => db,
         Err(e) => {
             eprintln!("Error opening database: {}", e);

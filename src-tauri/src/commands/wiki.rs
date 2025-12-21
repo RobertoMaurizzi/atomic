@@ -67,7 +67,7 @@ pub async fn generate_wiki_article(
         (provider_config, wiki_model)
     };
 
-    let input = wiki::prepare_wiki_generation(&db, &provider_config, &tag_id, &tag_name).await?;
+    let input = wiki::prepare_wiki_generation(db.as_core(), &provider_config, &tag_id, &tag_name).await?;
 
     // Generate article via API (async, no db lock needed)
     let result = wiki::generate_wiki_content(&provider_config, &input, &wiki_model).await?;

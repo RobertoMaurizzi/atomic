@@ -1,3 +1,5 @@
+//! Ollama provider implementation
+
 mod embedding;
 mod llm;
 

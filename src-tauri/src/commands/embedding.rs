@@ -154,7 +154,7 @@ pub async fn search_atoms_semantic(
     let options =
         crate::search::SearchOptions::new(query, crate::search::SearchMode::Semantic, limit)
             .with_threshold(threshold);
-    crate::search::search_atoms(&db, options).await
+    crate::search::search_atoms(db.as_core(), options).await
 }
 
 /// Search atoms using BM25 keyword search (FTS5)
@@ -167,7 +167,7 @@ pub async fn search_atoms_keyword(
 ) -> Result<Vec<SemanticSearchResult>, String> {
     let options =
         crate::search::SearchOptions::new(query, crate::search::SearchMode::Keyword, limit);
-    crate::search::search_atoms(&db, options).await
+    crate::search::search_atoms(db.as_core(), options).await
 }
 
 /// Search atoms using hybrid search (combines BM25 keyword + vector semantic)
@@ -182,7 +182,7 @@ pub async fn search_atoms_hybrid(
     let options =
         crate::search::SearchOptions::new(query, crate::search::SearchMode::Hybrid, limit)
             .with_threshold(threshold);
-    crate::search::search_atoms(&db, options).await
+    crate::search::search_atoms(db.as_core(), options).await
 }
 
 /// Retry embedding generation for a failed atom

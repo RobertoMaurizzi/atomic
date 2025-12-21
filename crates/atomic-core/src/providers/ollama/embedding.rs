@@ -1,29 +1,26 @@
+//! Ollama embedding implementation
+
 use crate::providers::error::ProviderError;
-use crate::providers::openrouter::OpenRouterProvider;
+use crate::providers::ollama::OllamaProvider;
 use crate::providers::traits::EmbeddingConfig;
 use serde::{Deserialize, Serialize};
 
-/// OpenRouter Embeddings API request
+/// Ollama Embeddings API request
 #[derive(Serialize)]
 struct EmbeddingRequest {
     model: String,
     input: Vec<String>,
 }
 
-/// OpenRouter Embeddings API response
+/// Ollama Embeddings API response
 #[derive(Deserialize)]
 struct EmbeddingResponse {
-    data: Vec<EmbeddingData>,
+    embeddings: Vec<Vec<f32>>,
 }
 
-#[derive(Deserialize)]
-struct EmbeddingData {
-    embedding: Vec<f32>,
-}
-
-/// Generate embeddings for multiple texts via OpenRouter API
+/// Generate embeddings for multiple texts via Ollama API
 pub async fn embed_batch(
-    provider: &OpenRouterProvider,
+    provider: &OllamaProvider,
     texts: &[String],
     config: &EmbeddingConfig,
 ) -> Result<Vec<Vec<f32>>, ProviderError> {
@@ -38,11 +35,8 @@ pub async fn embed_batch(
 
     let response = provider
         .client()
-        .post(format!("{}/embeddings", provider.base_url()))
-        .header("Authorization", format!("Bearer {}", provider.api_key()))
+        .post(format!("{}/api/embed", provider.base_url()))
         .header("Content-Type", "application/json")
-        .header("HTTP-Referer", "https://atomic.app")
-        .header("X-Title", "Atomic")
         .json(&request)
         .send()
         .await?;
@@ -50,13 +44,6 @@ pub async fn embed_batch(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();
-
-        if status == 429 {
-            // Try to parse retry-after header
-            return Err(ProviderError::RateLimited {
-                retry_after_secs: None,
-            });
-        }
 
         return Err(ProviderError::Api {
             status,
@@ -66,9 +53,5 @@ pub async fn embed_batch(
 
     let embedding_response: EmbeddingResponse = response.json().await?;
 
-    Ok(embedding_response
-        .data
-        .into_iter()
-        .map(|d| d.embedding)
-        .collect())
+    Ok(embedding_response.embeddings)
 }

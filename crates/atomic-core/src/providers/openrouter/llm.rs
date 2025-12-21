@@ -1,3 +1,5 @@
+//! OpenRouter LLM implementation
+
 use crate::providers::error::ProviderError;
 use crate::providers::openrouter::OpenRouterProvider;
 use crate::providers::traits::{LlmConfig, StreamCallback};

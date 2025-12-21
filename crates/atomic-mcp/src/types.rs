@@ -11,9 +11,6 @@ pub struct SemanticSearchParams {
     /// Maximum number of results (default: 10, max: 50)
     #[serde(default)]
     pub limit: Option<i32>,
-    /// Minimum similarity threshold 0-1 (default: 0.3)
-    #[serde(default)]
-    pub threshold: Option<f32>,
 }
 
 /// A search result

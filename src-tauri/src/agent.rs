@@ -93,7 +93,7 @@ async fn execute_search_atoms(
     let options = crate::search::SearchOptions::new(query, crate::search::SearchMode::Semantic, limit)
         .with_threshold(0.3)
         .with_scope(scope_tag_ids.to_vec());
-    crate::search::search_atoms(db, options).await
+    crate::search::search_atoms(db.as_core(), options).await
 }
 
 fn execute_get_atom(db: &Database, atom_id: &str) -> Result<Option<String>, String> {
@@ -566,11 +566,10 @@ pub async fn send_chat_message(
     };
 
     // Create a new database reference for the async agent loop
-    let db_arc = Arc::new(Database {
-        conn: std::sync::Mutex::new(db.new_connection().map_err(|e| e.to_string())?),
-        db_path: db.db_path.clone(),
-        resource_dir: db.resource_dir.clone(),
-    });
+    let db_arc = Arc::new(
+        db.with_new_connection()
+            .map_err(|e| format!("Failed to create database connection: {}", e))?,
+    );
 
     // Run agent loop
     let mut result = run_agent_loop(app_handle.clone(), db_arc, provider_config, model, ctx).await?;

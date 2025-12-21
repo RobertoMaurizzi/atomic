@@ -1,3 +1,5 @@
+//! Ollama LLM implementation
+
 use crate::providers::error::ProviderError;
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::traits::{LlmConfig, StreamCallback};

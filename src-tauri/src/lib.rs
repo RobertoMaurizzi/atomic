@@ -44,14 +44,11 @@ pub fn run() {
 
             // Create a shared database reference for embedding tasks
             // This creates a new connection to the same database file
-            let shared_conn = database
-                .new_connection()
-                .expect("Failed to create shared database connection");
-            let shared_db: SharedDatabase = Arc::new(Database {
-                conn: std::sync::Mutex::new(shared_conn),
-                db_path: database.db_path.clone(),
-                resource_dir: database.resource_dir.clone(),
-            });
+            let shared_db: SharedDatabase = Arc::new(
+                database
+                    .with_new_connection()
+                    .expect("Failed to create shared database connection"),
+            );
 
             app.manage(database);
             app.manage(shared_db.clone());
