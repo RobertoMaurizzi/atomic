@@ -9,7 +9,31 @@ import { useAtomsStore } from '../../stores/atoms';
 import { useTagsStore } from '../../stores/tags';
 import { useUIStore } from '../../stores/ui';
 import { useTheme } from '../../hooks';
-import { resetStuckProcessing, processPendingEmbeddings, processPendingTagging, verifyProviderConfigured } from '../../lib/tauri';
+import { resetStuckProcessing, processPendingEmbeddings, processPendingTagging, verifyProviderConfigured } from '../../lib/api';
+import { isTauri } from '../../lib/platform';
+import { getTransport } from '../../lib/transport';
+
+function ConnectionBadge() {
+  const [wsConnected, setWsConnected] = useState(true);
+
+  useEffect(() => {
+    const transport = getTransport();
+    if (transport.mode !== 'http') return;
+    setWsConnected(transport.isConnected());
+    transport.onConnectionChange = (connected) => setWsConnected(connected);
+    return () => { transport.onConnectionChange = undefined; };
+  }, []);
+
+  const transport = getTransport();
+  if (transport.mode !== 'http') return null;
+
+  return (
+    <div className="fixed bottom-3 left-3 z-40 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--color-bg-elevated)] border border-[var(--color-border)] text-xs text-[var(--color-text-secondary)]">
+      <span className={`inline-block w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-amber-500 animate-pulse'}`} />
+      {wsConnected ? 'Connected' : 'Reconnecting...'}
+    </div>
+  );
+}
 
 export function Layout() {
   useTheme(); // Initialize theme
@@ -153,7 +177,7 @@ export function Layout() {
   // Show loading while checking
   if (isSetupRequired === null) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[var(--color-bg-main)] pt-[28px]">
+      <div className={`flex h-screen items-center justify-center bg-[var(--color-bg-main)] ${isTauri() ? 'pt-[28px]' : ''}`}>
         <span className="text-[var(--color-text-secondary)]">Loading...</span>
       </div>
     );
@@ -162,7 +186,7 @@ export function Layout() {
   // Show setup modal if required
   if (isSetupRequired) {
     return (
-      <div className="flex h-screen overflow-hidden bg-[var(--color-bg-main)] pt-[28px]">
+      <div className={`flex h-screen overflow-hidden bg-[var(--color-bg-main)] ${isTauri() ? 'pt-[28px]' : ''}`}>
         <SettingsModal
           isOpen={true}
           onClose={handleSetupComplete}
@@ -187,6 +211,7 @@ export function Layout() {
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+      <ConnectionBadge />
     </div>
   );
 }

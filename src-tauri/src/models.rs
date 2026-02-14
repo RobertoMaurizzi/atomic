@@ -11,10 +11,9 @@ pub use atomic_core::{
     WikiArticleWithCitations,
 };
 
-// Re-export chat types from atomic-core (they're defined there for convenience)
+// Re-export chat types from atomic-core
 pub use atomic_core::{
-    ChatCitation, ChatMessage, ChatMessageWithContext, ChatToolCall, Conversation,
-    ConversationWithMessages, ConversationWithTags,
+    ChatMessageWithContext, Conversation, ConversationWithMessages, ConversationWithTags,
 };
 
 // Note: CreateAtomRequest is defined in atomic-core lib.rs as a facade type

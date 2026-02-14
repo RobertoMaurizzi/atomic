@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "dev:server": "node scripts/dev-server.js",
+    "build:web": "VITE_BUILD_TARGET=web vite build --outDir dist-web",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:mcp-bridge": "node scripts/build-mcp-bridge.js",

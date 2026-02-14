@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../../lib/transport';
+import { isTauri } from '../../lib/platform';
 import { AtomEditor } from '../atoms/AtomEditor';
 import { AtomViewer } from '../atoms/AtomViewer';
 import { WikiViewer } from '../wiki/WikiViewer';
@@ -66,7 +67,7 @@ export function RightDrawer() {
       const fetchStart = performance.now();
       perfLog('Atom fetch START');
       setIsLoadingAtom(true);
-      invoke<AtomWithTags | null>('get_atom_by_id', { id: atomId })
+      getTransport().invoke<AtomWithTags | null>('get_atom_by_id', { id: atomId })
         .then((fetchedAtom) => {
           perfLog('Atom fetch COMPLETE', fetchStart);
           if (fetchedAtom) {
@@ -211,7 +212,7 @@ export function RightDrawer() {
       {/* Drawer */}
       <div
         ref={drawerRef}
-        className={`fixed top-0 right-0 h-full w-[75vw] min-w-[600px] max-w-[1200px] bg-[var(--color-bg-panel)] border-l border-[var(--color-border)] shadow-2xl z-50 transition-transform duration-200 ease-out pt-[28px] ${
+        className={`fixed top-0 right-0 h-full w-[75vw] min-w-[600px] max-w-[1200px] bg-[var(--color-bg-panel)] border-l border-[var(--color-border)] shadow-2xl z-50 transition-transform duration-200 ease-out ${isTauri() ? 'pt-[28px]' : ''} ${
           isOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
         style={{ backdropFilter: 'blur(var(--backdrop-blur))' }}

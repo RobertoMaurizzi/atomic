@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import * as d3 from 'd3-force';
-import { getAtomNeighborhood, type NeighborhoodGraph } from '../../lib/tauri';
+import { getAtomNeighborhood, type NeighborhoodGraph } from '../../lib/api';
 import { useUIStore } from '../../stores/ui';
 
 interface SimulationNode extends d3.SimulationNodeDatum {

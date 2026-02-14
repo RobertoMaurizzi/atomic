@@ -1,0 +1,342 @@
+export interface CommandSpec {
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  path: string | ((args: Record<string, unknown>) => string);
+  argsMode?: 'body' | 'query' | 'none'; // default: 'none'
+  transformArgs?: (args: Record<string, unknown>) => unknown;
+  transformResponse?: (data: unknown) => unknown;
+}
+
+// Helper: snake_case body from camelCase Tauri args
+function atomBody(args: Record<string, unknown>) {
+  return {
+    content: args.content,
+    source_url: args.sourceUrl ?? null,
+    tag_ids: args.tagIds ?? [],
+  };
+}
+
+export const COMMAND_MAP: Record<string, CommandSpec> = {
+  // ==================== Atoms ====================
+  get_all_atoms: {
+    method: 'GET',
+    path: '/api/atoms',
+  },
+  get_atoms_by_tag: {
+    method: 'GET',
+    path: (a) => `/api/atoms?tag_id=${encodeURIComponent(a.tagId as string)}`,
+  },
+  get_atom: {
+    method: 'GET',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}`,
+  },
+  get_atom_by_id: {
+    method: 'GET',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}`,
+  },
+  create_atom: {
+    method: 'POST',
+    path: '/api/atoms',
+    argsMode: 'body',
+    transformArgs: atomBody,
+  },
+  update_atom: {
+    method: 'PUT',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}`,
+    argsMode: 'body',
+    transformArgs: atomBody,
+  },
+  delete_atom: {
+    method: 'DELETE',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.id as string)}`,
+  },
+
+  // ==================== Tags ====================
+  get_all_tags: {
+    method: 'GET',
+    path: '/api/tags',
+  },
+  create_tag: {
+    method: 'POST',
+    path: '/api/tags',
+    argsMode: 'body',
+    transformArgs: (a) => ({ name: a.name, parent_id: a.parentId ?? null }),
+  },
+  update_tag: {
+    method: 'PUT',
+    path: (a) => `/api/tags/${encodeURIComponent(a.id as string)}`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ name: a.name, parent_id: a.parentId ?? null }),
+  },
+  delete_tag: {
+    method: 'DELETE',
+    path: (a) => `/api/tags/${encodeURIComponent(a.id as string)}`,
+  },
+
+  // ==================== Search ====================
+  search_atoms_semantic: {
+    method: 'POST',
+    path: '/api/search',
+    argsMode: 'body',
+    transformArgs: (a) => ({ query: a.query, mode: 'semantic', limit: a.limit, threshold: a.threshold }),
+  },
+  search_atoms_keyword: {
+    method: 'POST',
+    path: '/api/search',
+    argsMode: 'body',
+    transformArgs: (a) => ({ query: a.query, mode: 'keyword', limit: a.limit }),
+  },
+  search_atoms_hybrid: {
+    method: 'POST',
+    path: '/api/search',
+    argsMode: 'body',
+    transformArgs: (a) => ({ query: a.query, mode: 'hybrid', limit: a.limit, threshold: a.threshold }),
+  },
+  find_similar_atoms: {
+    method: 'GET',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.atomId as string)}/similar?limit=${a.limit ?? 10}&threshold=${a.threshold ?? 0.7}`,
+  },
+
+  // ==================== Embedding ====================
+  process_pending_embeddings: {
+    method: 'POST',
+    path: '/api/embeddings/process-pending',
+    transformResponse: (d: any) => d.count as number,
+  },
+  process_pending_tagging: {
+    method: 'POST',
+    path: '/api/embeddings/process-tagging',
+    transformResponse: (d: any) => d.count as number,
+  },
+  retry_embedding: {
+    method: 'POST',
+    path: (a) => `/api/embeddings/retry/${encodeURIComponent(a.atomId as string)}`,
+  },
+  reset_stuck_processing: {
+    method: 'POST',
+    path: '/api/embeddings/reset-stuck',
+    transformResponse: (d: any) => d.count as number,
+  },
+  get_embedding_status: {
+    method: 'GET',
+    path: (a) => `/api/atoms/${encodeURIComponent(a.atomId as string)}/embedding-status`,
+    transformResponse: (d: any) => d.status as string,
+  },
+
+  // ==================== Wiki ====================
+  get_all_wiki_articles: {
+    method: 'GET',
+    path: '/api/wiki',
+  },
+  get_wiki_article: {
+    method: 'GET',
+    path: (a) => `/api/wiki/${encodeURIComponent(a.tagId as string)}`,
+  },
+  get_wiki_article_status: {
+    method: 'GET',
+    path: (a) => `/api/wiki/${encodeURIComponent(a.tagId as string)}/status`,
+  },
+  generate_wiki_article: {
+    method: 'POST',
+    path: (a) => `/api/wiki/${encodeURIComponent(a.tagId as string)}/generate`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ tag_name: a.tagName }),
+  },
+  update_wiki_article: {
+    method: 'POST',
+    path: (a) => `/api/wiki/${encodeURIComponent(a.tagId as string)}/update`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ tag_name: a.tagName }),
+  },
+  delete_wiki_article: {
+    method: 'DELETE',
+    path: (a) => `/api/wiki/${encodeURIComponent(a.tagId as string)}`,
+  },
+
+  // ==================== Settings ====================
+  get_settings: {
+    method: 'GET',
+    path: '/api/settings',
+  },
+  set_setting: {
+    method: 'PUT',
+    path: (a) => `/api/settings/${encodeURIComponent(a.key as string)}`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ value: a.value }),
+  },
+  test_openrouter_connection: {
+    method: 'POST',
+    path: '/api/settings/test-openrouter',
+    argsMode: 'body',
+    transformArgs: (a) => ({ api_key: a.apiKey }),
+    transformResponse: (d: any) => d.success as boolean,
+  },
+  get_available_llm_models: {
+    method: 'GET',
+    path: '/api/settings/models',
+  },
+
+  // ==================== Canvas ====================
+  get_atom_positions: {
+    method: 'GET',
+    path: '/api/canvas/positions',
+  },
+  save_atom_positions: {
+    method: 'PUT',
+    path: '/api/canvas/positions',
+    argsMode: 'body',
+    transformArgs: (a) => a.positions,
+  },
+  get_atoms_with_embeddings: {
+    method: 'GET',
+    path: '/api/canvas/atoms-with-embeddings',
+  },
+
+  // ==================== Graph ====================
+  get_semantic_edges: {
+    method: 'GET',
+    path: (a) => `/api/graph/edges?min_similarity=${a.minSimilarity ?? 0.5}`,
+  },
+  get_atom_neighborhood: {
+    method: 'GET',
+    path: (a) => `/api/graph/neighborhood/${encodeURIComponent(a.atomId as string)}?depth=${a.depth ?? 1}&min_similarity=${a.minSimilarity ?? 0.5}`,
+  },
+  rebuild_semantic_edges: {
+    method: 'POST',
+    path: '/api/graph/rebuild-edges',
+    transformResponse: (d: any) => d.total_edges as number,
+  },
+
+  // ==================== Clustering ====================
+  compute_clusters: {
+    method: 'POST',
+    path: '/api/clustering/compute',
+    argsMode: 'body',
+    transformArgs: (a) => ({
+      min_similarity: a.minSimilarity,
+      min_cluster_size: a.minClusterSize,
+    }),
+  },
+  get_clusters: {
+    method: 'GET',
+    path: '/api/clustering',
+  },
+  get_connection_counts: {
+    method: 'GET',
+    path: (a) => `/api/clustering/connection-counts?min_similarity=${a.minSimilarity ?? 0.5}`,
+  },
+
+  // ==================== Chat ====================
+  create_conversation: {
+    method: 'POST',
+    path: '/api/conversations',
+    argsMode: 'body',
+    transformArgs: (a) => ({ tag_ids: a.tagIds ?? [], title: a.title ?? null }),
+  },
+  get_conversations: {
+    method: 'GET',
+    path: (a) => {
+      const params = new URLSearchParams();
+      if (a.filterTagId) params.set('filter_tag_id', a.filterTagId as string);
+      if (a.limit != null) params.set('limit', String(a.limit));
+      if (a.offset != null) params.set('offset', String(a.offset));
+      const qs = params.toString();
+      return `/api/conversations${qs ? `?${qs}` : ''}`;
+    },
+  },
+  get_conversation: {
+    method: 'GET',
+    path: (a) => `/api/conversations/${encodeURIComponent(a.conversationId as string)}`,
+  },
+  update_conversation: {
+    method: 'PUT',
+    path: (a) => `/api/conversations/${encodeURIComponent(a.id as string)}`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ title: a.title ?? null, is_archived: a.isArchived ?? null }),
+  },
+  delete_conversation: {
+    method: 'DELETE',
+    path: (a) => `/api/conversations/${encodeURIComponent(a.id as string)}`,
+  },
+  set_conversation_scope: {
+    method: 'PUT',
+    path: (a) => `/api/conversations/${encodeURIComponent(a.conversationId as string)}/scope`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ tag_ids: a.tagIds }),
+  },
+  add_tag_to_scope: {
+    method: 'POST',
+    path: (a) => `/api/conversations/${encodeURIComponent(a.conversationId as string)}/scope/tags`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ tag_id: a.tagId }),
+  },
+  remove_tag_from_scope: {
+    method: 'DELETE',
+    path: (a) => `/api/conversations/${encodeURIComponent(a.conversationId as string)}/scope/tags/${encodeURIComponent(a.tagId as string)}`,
+  },
+  send_chat_message: {
+    method: 'POST',
+    path: (a) => `/api/conversations/${encodeURIComponent(a.conversationId as string)}/messages`,
+    argsMode: 'body',
+    transformArgs: (a) => ({ content: a.content }),
+  },
+
+  // ==================== Ollama ====================
+  test_ollama: {
+    method: 'POST',
+    path: '/api/ollama/test',
+    argsMode: 'body',
+    transformArgs: (a) => ({ host: a.host }),
+    transformResponse: (d: any) => d.success as boolean,
+  },
+  get_ollama_models: {
+    method: 'GET',
+    path: (a) => `/api/ollama/models?host=${encodeURIComponent(a.host as string)}`,
+  },
+  get_ollama_embedding_models_cmd: {
+    method: 'GET',
+    path: (a) => `/api/ollama/embedding-models?host=${encodeURIComponent(a.host as string)}`,
+  },
+  get_ollama_llm_models_cmd: {
+    method: 'GET',
+    path: (a) => `/api/ollama/llm-models?host=${encodeURIComponent(a.host as string)}`,
+  },
+  verify_provider_configured: {
+    method: 'GET',
+    path: '/api/provider/verify',
+    transformResponse: (d: any) => d.configured as boolean,
+  },
+
+  // ==================== Auth / Tokens ====================
+  create_api_token: {
+    method: 'POST',
+    path: '/api/auth/tokens',
+    argsMode: 'body',
+    transformArgs: (a) => ({ name: a.name }),
+  },
+  list_api_tokens: {
+    method: 'GET',
+    path: '/api/auth/tokens',
+  },
+  revoke_api_token: {
+    method: 'DELETE',
+    path: (a) => `/api/auth/tokens/${encodeURIComponent(a.id as string)}`,
+  },
+
+  // ==================== Utils ====================
+  check_sqlite_vec: {
+    method: 'GET',
+    path: '/api/utils/sqlite-vec',
+    transformResponse: (d: any) => d.version as string,
+  },
+  compact_tags: {
+    method: 'POST',
+    path: '/api/utils/compact-tags',
+  },
+};
+
+// Desktop-only commands that cannot work via HTTP
+export const DESKTOP_ONLY_COMMANDS = new Set([
+  'import_obsidian_vault',
+  'get_mcp_bridge_path',
+  'get_mcp_config',
+]);

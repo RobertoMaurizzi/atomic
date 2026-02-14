@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../lib/transport';
 
 // ==================== Types ====================
 
@@ -158,7 +158,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   openConversation: async (id: string) => {
     set({ isLoading: true, error: null });
     try {
-      const result = await invoke<ConversationWithMessages | null>('get_conversation', {
+      const result = await getTransport().invoke<ConversationWithMessages | null>('get_conversation', {
         conversationId: id,
       });
 
@@ -187,7 +187,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ isLoading: true, error: null, listFilterTagId: tagId });
     try {
       // Fetch conversations that contain this tag
-      const conversations = await invoke<ConversationWithTags[]>('get_conversations', {
+      const conversations = await getTransport().invoke<ConversationWithTags[]>('get_conversations', {
         filterTagId: tagId,
         limit: 50,
         offset: 0,
@@ -226,7 +226,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   fetchConversations: async (tagId?: string) => {
     set({ isLoading: true, error: null });
     try {
-      const conversations = await invoke<ConversationWithTags[]>('get_conversations', {
+      const conversations = await getTransport().invoke<ConversationWithTags[]>('get_conversations', {
         filterTagId: tagId ?? null,
         limit: 50,
         offset: 0,
@@ -240,7 +240,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   createConversation: async (tagIds?: string[]) => {
     set({ isLoading: true, error: null });
     try {
-      const conversation = await invoke<ConversationWithTags>('create_conversation', {
+      const conversation = await getTransport().invoke<ConversationWithTags>('create_conversation', {
         tagIds: tagIds ?? [],
         title: null,
       });
@@ -263,7 +263,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   deleteConversation: async (id: string) => {
     try {
-      await invoke('delete_conversation', { id });
+      await getTransport().invoke('delete_conversation', { id });
       set((state) => ({
         conversations: state.conversations.filter((c) => c.id !== id),
         // If we deleted the current conversation, go back to list
@@ -278,7 +278,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   updateConversationTitle: async (id: string, title: string) => {
     try {
-      await invoke('update_conversation', { id, title, isArchived: null });
+      await getTransport().invoke('update_conversation', { id, title, isArchived: null });
       set((state) => ({
         conversations: state.conversations.map((c) =>
           c.id === id ? { ...c, title } : c
@@ -299,7 +299,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (!currentConversation) return;
 
     try {
-      const updated = await invoke<ConversationWithTags>('set_conversation_scope', {
+      const updated = await getTransport().invoke<ConversationWithTags>('set_conversation_scope', {
         conversationId: currentConversation.id,
         tagIds,
       });
@@ -314,7 +314,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (!currentConversation) return;
 
     try {
-      const updated = await invoke<ConversationWithTags>('add_tag_to_scope', {
+      const updated = await getTransport().invoke<ConversationWithTags>('add_tag_to_scope', {
         conversationId: currentConversation.id,
         tagId,
       });
@@ -329,7 +329,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (!currentConversation) return;
 
     try {
-      const updated = await invoke<ConversationWithTags>('remove_tag_from_scope', {
+      const updated = await getTransport().invoke<ConversationWithTags>('remove_tag_from_scope', {
         conversationId: currentConversation.id,
         tagId,
       });
@@ -368,7 +368,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     });
 
     try {
-      await invoke<ChatMessageWithContext>('send_chat_message', {
+      await getTransport().invoke<ChatMessageWithContext>('send_chat_message', {
         conversationId: currentConversation.id,
         content,
       });

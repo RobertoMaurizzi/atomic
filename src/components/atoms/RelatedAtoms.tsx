@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../../lib/transport';
 import { SimilarAtomResult } from '../../stores/atoms';
 import { MiniGraphPreview } from '../canvas/MiniGraphPreview';
 
@@ -34,7 +34,7 @@ export function RelatedAtoms({ atomId, onAtomClick, onViewGraph }: RelatedAtomsP
         perfLog('Fetch similar atoms START');
         setIsLoading(true);
         try {
-          const results = await invoke<SimilarAtomResult[]>('find_similar_atoms', {
+          const results = await getTransport().invoke<SimilarAtomResult[]>('find_similar_atoms', {
             atomId,
             limit: 5,
             threshold: 0.7,

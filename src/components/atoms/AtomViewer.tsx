@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useLayoutEffect, ReactNode, useRef, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openExternalUrl } from '../../lib/platform';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
 import { SearchBar } from '../ui/SearchBar';
@@ -334,7 +334,7 @@ export function AtomViewer({ atom, onClose, onEdit, highlightText }: AtomViewerP
         onClick={(e) => {
           e.preventDefault();
           if (href) {
-            openUrl(href).catch(err => console.error('Failed to open URL:', err));
+            openExternalUrl(href).catch(err => console.error('Failed to open URL:', err));
           }
         }}
         className="cursor-pointer"

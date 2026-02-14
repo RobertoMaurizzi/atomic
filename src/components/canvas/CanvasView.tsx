@@ -13,7 +13,7 @@ import {
   getConnectionCounts,
   AtomPosition,
   SemanticEdge,
-} from '../../lib/tauri';
+} from '../../lib/api';
 
 const CANVAS_CENTER = 2500;
 

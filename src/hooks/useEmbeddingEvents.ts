@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { getTransport } from '../lib/transport';
 import { useAtomsStore } from '../stores/atoms';
 import { useTagsStore } from '../stores/tags';
 import { useUIStore } from '../stores/ui';
@@ -44,18 +44,20 @@ export function useEmbeddingEvents() {
   // Use getState() inside callbacks to get latest store functions
   // This avoids re-registering listeners when store state changes
   useEffect(() => {
+    const transport = getTransport();
+
     // Listen for atom-created events (from HTTP API / browser extension)
-    const unlistenAtomCreated = listen<AtomWithTags>('atom-created', (event) => {
-      console.log('Atom created via HTTP API:', event.payload);
-      useAtomsStore.getState().addAtom(event.payload);
+    const unsubAtomCreated = transport.subscribe<AtomWithTags>('atom-created', (payload) => {
+      console.log('Atom created via HTTP API:', payload);
+      useAtomsStore.getState().addAtom(payload);
     });
 
     // Listen for embedding-complete events (fast, embedding only)
     // Batch these: collect status updates and flush every STATUS_BATCH_MS
-    const unlistenEmbeddingComplete = listen<EmbeddingCompletePayload>('embedding-complete', (event) => {
+    const unsubEmbeddingComplete = transport.subscribe<EmbeddingCompletePayload>('embedding-complete', (payload) => {
       pendingStatusUpdates.current.push({
-        atomId: event.payload.atom_id,
-        status: event.payload.status,
+        atomId: payload.atom_id,
+        status: payload.status,
       });
 
       clearTimeout(statusBatchTimer.current);
@@ -70,14 +72,14 @@ export function useEmbeddingEvents() {
 
     // Listen for tagging-complete events (slower, has tag info)
     // Debounce these: accumulate and do a single refetch after events settle
-    const unlistenTaggingComplete = listen<TaggingCompletePayload>('tagging-complete', (event) => {
+    const unsubTaggingComplete = transport.subscribe<TaggingCompletePayload>('tagging-complete', (payload) => {
       // If new tags were created, we need to refresh the tag tree
-      if (event.payload.new_tags_created && event.payload.new_tags_created.length > 0) {
+      if (payload.new_tags_created && payload.new_tags_created.length > 0) {
         needsTagRefresh.current = true;
       }
 
       // If tags were extracted, we need to refresh atoms to show updated tags
-      if (event.payload.tags_extracted && event.payload.tags_extracted.length > 0) {
+      if (payload.tags_extracted && payload.tags_extracted.length > 0) {
         needsAtomRefresh.current = true;
       }
 
@@ -103,22 +105,22 @@ export function useEmbeddingEvents() {
     });
 
     // Listen for embeddings-reset events (provider/model change triggers re-embedding)
-    const unlistenEmbeddingsReset = listen<EmbeddingsResetPayload>('embeddings-reset', (event) => {
-      console.log('Embeddings reset event:', event.payload);
+    const unsubEmbeddingsReset = transport.subscribe<EmbeddingsResetPayload>('embeddings-reset', (payload) => {
+      console.log('Embeddings reset event:', payload);
       const { addLoadingOperation, removeLoadingOperation } = useUIStore.getState();
       // Re-fetch atoms to show updated pending status
       const opId = `fetch-atoms-reset-${Date.now()}`;
-      addLoadingOperation(opId, `Re-embedding ${event.payload.pending_count} atoms...`);
+      addLoadingOperation(opId, `Re-embedding ${payload.pending_count} atoms...`);
       useAtomsStore.getState().fetchAtoms().finally(() => removeLoadingOperation(opId));
     });
 
     return () => {
       clearTimeout(statusBatchTimer.current);
       clearTimeout(refetchDebounceTimer.current);
-      unlistenAtomCreated.then(fn => fn());
-      unlistenEmbeddingComplete.then(fn => fn());
-      unlistenTaggingComplete.then(fn => fn());
-      unlistenEmbeddingsReset.then(fn => fn());
+      unsubAtomCreated();
+      unsubEmbeddingComplete();
+      unsubTaggingComplete();
+      unsubEmbeddingsReset();
     };
   }, []); // Empty deps - only run once on mount
 }

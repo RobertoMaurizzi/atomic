@@ -1,0 +1,43 @@
+[package]
+name = "atomic-server"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone HTTP server for Atomic knowledge base"
+license = "MIT"
+
+[[bin]]
+name = "atomic-server"
+path = "src/main.rs"
+
+[dependencies]
+# Core library
+atomic-core = { path = "../atomic-core" }
+
+# Web framework
+actix-web = "4.9"
+actix-cors = "0.7"
+actix-ws = "0.3"
+
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP client (for OpenRouter proxy calls)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Database (needed for direct SQL in some routes)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

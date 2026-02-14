@@ -3,8 +3,6 @@
 pub use atomic_core::providers::{
     // Config
     ProviderConfig, ProviderType,
-    // Factory functions
-    create_streaming_llm_provider,
     // Cached factory functions
     get_embedding_provider, get_model_capabilities,
 };
@@ -23,8 +21,3 @@ pub mod models {
 pub mod traits {
     pub use atomic_core::providers::traits::*;
 }
-
-pub mod types {
-    pub use atomic_core::providers::types::*;
-}
-

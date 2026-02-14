@@ -33,15 +33,16 @@ pub async fn set_setting(
     let mut dimension_changed = false;
 
     if dimension_affecting_keys.contains(&key.as_str()) {
-        let (will_change, new_dim) = crate::db::will_dimension_change(&conn, &key, &value);
+        let (will_change, new_dim) = atomic_core::db::will_dimension_change(&conn, &key, &value);
 
         if will_change {
-            let current_dim = crate::db::get_current_embedding_dimension(&conn);
+            let current_dim = atomic_core::db::get_current_embedding_dimension(&conn);
             eprintln!(
                 "Embedding dimension changing from {} to {} due to {} change - recreating vec_chunks",
                 current_dim, new_dim, key
             );
-            crate::db::recreate_vec_chunks_with_dimension(&conn, new_dim)?;
+            atomic_core::db::recreate_vec_chunks_with_dimension(&conn, new_dim)
+                .map_err(|e| e.to_string())?;
             dimension_changed = true;
         }
     }

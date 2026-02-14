@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import * as d3 from 'd3-force';
-import { getAtomNeighborhood, type NeighborhoodGraph, type NeighborhoodAtom } from '../../lib/tauri';
+import { getAtomNeighborhood, type NeighborhoodGraph, type NeighborhoodAtom } from '../../lib/api';
 import { useUIStore } from '../../stores/ui';
 
 // Generate a consistent HSL color from a string (tag name)

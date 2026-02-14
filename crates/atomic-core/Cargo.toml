@@ -30,6 +30,11 @@ tiktoken-rs = "0.6"
 zerocopy = { version = "0.8", features = ["derive"] }
 thiserror = "1"
 
+# Token auth
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+
 # For obsidian import
 glob = "0.3"
 yaml-rust2 = "0.9"

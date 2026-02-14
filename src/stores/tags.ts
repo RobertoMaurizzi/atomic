@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../lib/transport';
 
 export interface Tag {
   id: string;
@@ -41,7 +41,7 @@ export const useTagsStore = create<TagsStore>((set) => ({
   fetchTags: async () => {
     set({ isLoading: true, error: null });
     try {
-      const tags = await invoke<TagWithCount[]>('get_all_tags');
+      const tags = await getTransport().invoke<TagWithCount[]>('get_all_tags');
       set({ tags, isLoading: false });
     } catch (error) {
       set({ error: String(error), isLoading: false });
@@ -51,12 +51,12 @@ export const useTagsStore = create<TagsStore>((set) => ({
   createTag: async (name: string, parentId?: string) => {
     set({ error: null });
     try {
-      const tag = await invoke<Tag>('create_tag', {
+      const tag = await getTransport().invoke<Tag>('create_tag', {
         name,
         parentId: parentId || null,
       });
       // Refetch tags to get updated tree structure
-      const tags = await invoke<TagWithCount[]>('get_all_tags');
+      const tags = await getTransport().invoke<TagWithCount[]>('get_all_tags');
       set({ tags });
       return tag;
     } catch (error) {
@@ -68,13 +68,13 @@ export const useTagsStore = create<TagsStore>((set) => ({
   updateTag: async (id: string, name: string, parentId?: string) => {
     set({ error: null });
     try {
-      const tag = await invoke<Tag>('update_tag', {
+      const tag = await getTransport().invoke<Tag>('update_tag', {
         id,
         name,
         parentId: parentId || null,
       });
       // Refetch tags to get updated tree structure
-      const tags = await invoke<TagWithCount[]>('get_all_tags');
+      const tags = await getTransport().invoke<TagWithCount[]>('get_all_tags');
       set({ tags });
       return tag;
     } catch (error) {
@@ -86,9 +86,9 @@ export const useTagsStore = create<TagsStore>((set) => ({
   deleteTag: async (id: string) => {
     set({ error: null });
     try {
-      await invoke('delete_tag', { id });
+      await getTransport().invoke('delete_tag', { id });
       // Refetch tags to get updated tree structure
-      const tags = await invoke<TagWithCount[]>('get_all_tags');
+      const tags = await getTransport().invoke<TagWithCount[]>('get_all_tags');
       set({ tags });
     } catch (error) {
       set({ error: String(error) });
@@ -99,9 +99,9 @@ export const useTagsStore = create<TagsStore>((set) => ({
   compactTags: async () => {
     set({ isCompacting: true, error: null });
     try {
-      const result = await invoke<CompactionResult>('compact_tags');
+      const result = await getTransport().invoke<CompactionResult>('compact_tags');
       // Refetch tags to get updated tree structure
-      const tags = await invoke<TagWithCount[]>('get_all_tags');
+      const tags = await getTransport().invoke<TagWithCount[]>('get_all_tags');
       set({ tags, isCompacting: false });
       return result;
     } catch (error) {

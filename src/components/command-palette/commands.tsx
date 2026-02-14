@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../../lib/transport';
 import { Command, CommandCategory } from './types';
 import { useUIStore } from '../../stores/ui';
 import { useTagsStore } from '../../stores/tags';
@@ -226,7 +226,7 @@ export const commands: Command[] = [
     icon: RefreshIcon,
     action: async () => {
       try {
-        const count = await invoke<number>('process_pending_embeddings');
+        const count = await getTransport().invoke<number>('process_pending_embeddings');
         if (count > 0) {
           console.log(`Retrying ${count} pending embeddings...`);
         }

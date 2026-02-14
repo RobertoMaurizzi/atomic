@@ -1,87 +1,183 @@
 # Atomic - Note-Taking Desktop Application
 
 ## Project Overview
-Atomic is a Tauri v2 desktop application for note-taking with a React frontend. It features markdown editing, hierarchical tagging, AI-powered semantic search using embeddings, automatic tag extraction, wiki article synthesis using OpenRouter LLM, and an interactive canvas view for spatial atom visualization.
+Atomic is a Tauri v2 desktop application for note-taking with a React frontend. It features markdown editing, hierarchical tagging, AI-powered semantic search using embeddings, automatic tag extraction, wiki article synthesis, agentic chat with RAG, and an interactive canvas view for spatial atom visualization. The core business logic lives in the `atomic-core` Rust crate, which is independent of Tauri and can be used as a standalone library. A standalone `atomic-server` binary provides full REST API + WebSocket access to the knowledge base without Tauri.
 
 ## Tech Stack
 - **Desktop Framework**: Tauri v2 (Rust backend)
+- **Core Library**: `atomic-core` Rust crate (standalone, no Tauri dependency)
 - **Frontend**: React 18+ with TypeScript
 - **Build Tool**: Vite 6
 - **Styling**: Tailwind CSS v4 (using `@tailwindcss/vite` plugin)
 - **State Management**: Zustand 5 (with persist middleware for UI preferences)
 - **Database**: SQLite with sqlite-vec extension (via rusqlite)
-- **Embeddings**: OpenRouter-based embeddings (default model: openai/text-embedding-3-small)
-- **LLM Provider**: OpenRouter API (configurable model, default: openai/gpt-4o-mini for tagging)
+- **AI Providers**: Pluggable — OpenRouter and Ollama fully supported
+  - **Embeddings**: OpenRouter (default: openai/text-embedding-3-small) or Ollama (default: nomic-embed-text)
+  - **LLM**: OpenRouter (default: openai/gpt-4o-mini for tagging) or Ollama (default: llama3.2)
+- **HTTP Server**: actix-web (embedded in Tauri for browser extension / MCP; standalone `atomic-server` binary for headless access)
+- **MCP Server**: Model Context Protocol server via rmcp (integrated + standalone binary)
 - **HTTP Client**: reqwest (Rust)
 - **Markdown Editor**: CodeMirror 6 (`@uiw/react-codemirror`)
 - **Markdown Rendering**: react-markdown with remark-gfm
 - **Canvas Visualization**: d3-force (simulation), react-zoom-pan-pinch (zoom/pan)
+- **List Virtualization**: @tanstack/react-virtual
+
+## Architecture
+
+The project is a **Cargo workspace** with multiple crates:
+
+```
+Cargo.toml (workspace root)
+├── src-tauri/              → Tauri desktop app (thin wrappers around atomic-core)
+├── crates/atomic-core/     → Standalone core library (all business logic, no Tauri dependency)
+├── crates/atomic-server/   → Standalone HTTP server binary (REST API + WebSocket, no Tauri)
+├── crates/atomic-mcp/      → Standalone MCP server binary
+└── crates/mcp-bridge/      → HTTP-to-stdio bridge for MCP protocol
+```
+
+**`atomic-core`** is the key architectural piece — it provides the `AtomicCore` facade with all CRUD, search, embedding, wiki, chat, agent, and clustering operations. It uses callback-based event systems (`Fn(EmbeddingEvent)`, `Fn(ChatEvent)`) rather than Tauri events, making it usable from any Rust context.
+
+The Tauri app (`src-tauri`) is a thin wrapper that:
+1. Manages the `AppHandle` for Tauri events
+2. Delegates to `atomic-core` for all business logic (including chat and agent)
+3. Bridges `ChatEvent` / `EmbeddingEvent` callbacks → Tauri `app_handle.emit()` events
+4. Runs an HTTP server (actix-web on port 44380) for browser extension and MCP
+
+The standalone server (`atomic-server`) wraps `atomic-core` with:
+1. Full REST API (~47 endpoints) covering all `AtomicCore` operations
+2. WebSocket endpoint for push events (embedding progress, chat streaming)
+3. Named, revocable API token authentication (SHA-256 hashed, DB-backed)
+4. No Tauri dependency — runs headless for browser extensions, web clients, mobile apps
 
 ## Project Structure
 ```
-/scripts
-  import-wikipedia.js  # Bulk import Wikipedia articles for stress testing
-  README.md            # Documentation for scripts
+/Cargo.toml             # Workspace definition
+
+/crates
+  /atomic-core          # Standalone core library
+    /src
+      lib.rs            # AtomicCore facade with all high-level operations
+      db.rs             # SQLite setup, migrations, connection management
+      models.rs         # Shared Rust structs (Atom, Tag, WikiArticle, etc.)
+      error.rs          # AtomicCoreError enum
+      chunking.rs       # Markdown-aware content chunking
+      embedding.rs      # Embedding generation + tag extraction pipeline
+      extraction.rs     # Tag extraction logic using provider abstraction
+      search.rs         # Unified search (semantic, keyword, hybrid)
+      wiki.rs           # Wiki article generation and update logic
+      settings.rs       # Settings CRUD with defaults and migration
+      chat.rs           # Conversation CRUD (create, get, update, delete, scope management)
+      agent.rs          # Agentic chat loop with tool calling, ChatEvent callback system
+      clustering.rs     # Atom clustering algorithms
+      compaction.rs     # Tag compaction using LLM
+      tokens.rs         # Named API token CRUD (create, verify, revoke, migrate)
+      /import
+        mod.rs          # Import module exports
+        obsidian.rs     # Obsidian vault import logic
+      /providers        # Pluggable AI provider abstraction
+        mod.rs          # ProviderConfig, factory functions, provider cache
+        types.rs        # Message, ToolCall, CompletionResponse, StreamDelta
+        error.rs        # ProviderError enum with retry support
+        traits.rs       # EmbeddingProvider, LlmProvider, StreamingLlmProvider traits
+        models.rs       # AvailableModel, capability caching
+        /openrouter     # OpenRouter provider implementation
+          mod.rs        # OpenRouterProvider combining embedding + LLM
+          embedding.rs  # Embedding API calls
+          llm.rs        # Chat completion + streaming
+        /ollama         # Ollama provider implementation (full support)
+          mod.rs        # OllamaProvider combining embedding + LLM
+          embedding.rs  # Embedding API calls with batch processing
+          llm.rs        # Chat completion + streaming with tool calling
+    Cargo.toml
+  /atomic-server          # Standalone HTTP server (no Tauri dependency)
+    /src
+      main.rs             # CLI entry point with subcommands (serve, token create/list/revoke)
+      config.rs           # Cli struct with Serve/Token subcommands (clap derive)
+      state.rs            # AppState (AtomicCore + broadcast channel), ServerEvent enum
+      auth.rs             # Named API token auth middleware (DB-backed, verify + last_used update)
+      error.rs            # ApiError -> HttpResponse mapping
+      ws.rs               # WebSocket upgrade handler, broadcast subscriber loop
+      event_bridge.rs     # EmbeddingEvent/ChatEvent callback -> ServerEvent broadcast bridge
+      /routes
+        mod.rs            # configure_routes() registering all route groups
+        atoms.rs          # Atom + Tag CRUD
+        search.rs         # Unified search (semantic/keyword/hybrid) + find_similar
+        wiki.rs           # Wiki CRUD + generate + update
+        settings.rs       # Get/set settings, test connection, list models
+        embedding.rs      # Process pending, retry, reset stuck, get status
+        canvas.rs         # Positions CRUD, atoms-with-embeddings
+        graph.rs          # Semantic edges, neighborhood, rebuild
+        clustering.rs     # Compute, get, connection counts
+        chat.rs           # Conversations CRUD, scope management, send message
+        ollama.rs         # Test, list models, verify provider
+        auth.rs           # API token CRUD (create, list, revoke)
+        utils.rs          # sqlite-vec check, compact tags
+    Cargo.toml
+  /atomic-mcp             # Standalone MCP server binary
+  /mcp-bridge             # HTTP-to-stdio bridge for MCP
 
 /src-tauri
   /src
-    main.rs           # Tauri entry point
-    lib.rs            # App setup, command registration
-    db.rs             # SQLite setup, migrations
-    models.rs         # Rust structs for data
-    chunking.rs       # Content chunking algorithm
-    embedding.rs      # Embedding generation + tag extraction pipeline
-    extraction.rs     # Tag extraction logic using provider abstraction
-    search.rs         # Unified search (semantic, keyword, hybrid)
-    wiki.rs           # Wiki article generation and update logic
-    settings.rs       # Settings CRUD operations
-    chat.rs           # Conversation CRUD and scope management
-    agent.rs          # Agentic chat loop with tool calling and streaming
-    clustering.rs     # Atom clustering for canvas visualization
-    compaction.rs     # Tag compaction using LLM
-    /commands         # Tauri command implementations (organized by domain)
-      mod.rs          # Re-exports all commands
-      helpers.rs      # Shared helper functions
-      atoms.rs        # Atom CRUD operations
-      tags.rs         # Tag CRUD operations
-      embedding.rs    # Embedding and search commands
-      settings.rs     # Settings and model discovery
-      wiki.rs         # Wiki article operations
-      canvas.rs       # Canvas position management
-      graph.rs        # Semantic graph operations
-      clustering.rs   # Clustering commands
-      ollama.rs       # Ollama-specific commands
-      utils.rs        # Utility commands (sqlite-vec check, tag compaction)
-    /providers        # Pluggable AI provider abstraction
-      mod.rs          # Module exports
-      types.rs        # Message, ToolCall, CompletionResponse, StreamDelta, etc.
-      error.rs        # ProviderError enum with retry support
-      traits.rs       # EmbeddingProvider, LlmProvider, StreamingLlmProvider traits
-      registry.rs     # Provider factory (for future multi-provider support)
-      /openrouter     # OpenRouter provider implementation
-        mod.rs        # OpenRouterProvider combining embedding + LLM
-        embedding.rs  # Embedding API calls
-        llm.rs        # Chat completion + streaming
+    main.rs             # Tauri entry point
+    lib.rs              # App setup, command registration, HTTP server launch
+    db.rs               # Tauri-specific Database wrapper around atomic-core
+    models.rs           # Tauri-specific request/response structs
+    http_server.rs      # actix-web HTTP server (port 44380) for browser extension + MCP
+    chat.rs             # Thin wrappers delegating to atomic-core chat CRUD
+    agent.rs            # Thin wrapper bridging ChatEvent → Tauri events
+    obsidian.rs         # Obsidian import Tauri integration
+    /mcp                # MCP server integration
+      mod.rs            # Module exports
+      server.rs         # AtomicMcpServer with tool handlers (semantic_search, read_atom, etc.)
+      types.rs          # MCP-specific types
+    /commands            # Tauri command implementations (thin wrappers)
+      mod.rs            # Re-exports all commands
+      helpers.rs        # Shared helper functions
+      atoms.rs          # Atom CRUD (delegates to atomic-core)
+      tags.rs           # Tag CRUD
+      embedding.rs      # Embedding and search commands
+      settings.rs       # Settings and model discovery
+      wiki.rs           # Wiki article operations
+      canvas.rs         # Canvas position management
+      graph.rs          # Semantic graph operations
+      clustering.rs     # Clustering commands
+      ollama.rs         # Ollama-specific commands
+      import.rs         # Obsidian import command
+      utils.rs          # Utility commands (sqlite-vec check, tag compaction)
+    /providers          # Re-exports from atomic-core
+      mod.rs            # Thin re-export layer
   Cargo.toml
   tauri.conf.json
 
+/scripts
+  import-wikipedia.js   # Bulk import Wikipedia articles
+  import-rss.js         # RSS feed import
+  import/obsidian.js    # Obsidian vault import (Node.js alternative)
+  build-mcp-bridge.js   # Build standalone MCP bridge binary
+  build-release.js      # Versioned release builds
+  reset-database.js     # Database reset utilities
+  reset-tags.js         # Tag reset utilities
+  reset-chunks.js       # Chunk reset utilities
+  drop-database.js      # Database drop utility
+
 /src
   /components
-    /layout           # LeftPanel, MainView, RightDrawer, Layout
-    /atoms            # AtomCard, AtomEditor, AtomViewer, AtomGrid, AtomList, RelatedAtoms
-    /canvas           # CanvasView, CanvasContent, AtomNode, ConnectionLines, CanvasControls, useForceSimulation
-    /tags             # TagTree, TagNode, TagChip, TagSelector
-    /wiki             # WikiViewer, WikiArticleContent, WikiHeader, WikiEmptyState, WikiGenerating, CitationLink, CitationPopover
-    /chat             # ChatViewer, ConversationsList, ConversationCard, ChatView, ChatHeader, ChatMessage, ChatInput, ScopeEditor
-    /search           # SemanticSearch
-    /settings         # SettingsModal, SettingsButton
-    /ui               # Button, Input, Modal, FAB, ContextMenu
-  /stores             # Zustand stores (atoms.ts, tags.ts, ui.ts, settings.ts, wiki.ts, chat.ts)
-  /hooks              # Custom hooks (useClickOutside, useKeyboard, useEmbeddingEvents, useChatEvents)
-  /lib                # Utilities (tauri.ts, markdown.ts, date.ts, similarity.ts)
+    /layout             # LeftPanel, MainView, RightDrawer, Layout
+    /atoms              # AtomCard, AtomEditor, AtomViewer, AtomGrid, AtomList, RelatedAtoms
+    /canvas             # CanvasView, CanvasContent, AtomNode, ConnectionLines, CanvasControls, useForceSimulation
+    /tags               # TagTree, TagNode, TagChip, TagSelector
+    /wiki               # WikiViewer, WikiArticleContent, WikiHeader, WikiEmptyState, WikiGenerating, CitationLink, CitationPopover
+    /chat               # ChatViewer, ConversationsList, ConversationCard, ChatView, ChatHeader, ChatMessage, ChatInput, ScopeEditor
+    /command-palette     # CommandPalette, CommandInput, CommandList, CommandItem, SearchResults, TagResults, fuzzySearch
+    /search             # SemanticSearch
+    /settings           # SettingsModal, SettingsButton
+    /ui                 # Button, Input, Modal, FAB, ContextMenu
+  /stores               # Zustand stores (atoms.ts, tags.ts, ui.ts, settings.ts, wiki.ts, chat.ts)
+  /hooks                # Custom hooks (useClickOutside, useKeyboard, useEmbeddingEvents, useChatEvents)
+  /lib                  # Utilities (tauri.ts, markdown.ts, date.ts, similarity.ts)
   App.tsx
   main.tsx
-  index.css           # Tailwind imports + custom animations
+  index.css             # Tailwind imports + custom animations
 
 /index.html
 /vite.config.ts
@@ -110,14 +206,28 @@ npm run build
 
 ### Rust Backend
 ```bash
-# Check Rust code
-cd src-tauri && cargo check
+# Check all workspace crates
+cargo check
 
-# Build Rust code
-cd src-tauri && cargo build
+# Build all workspace crates
+cargo build
 
-# Run tests (including chunking tests)
-cd src-tauri && cargo test
+# Run tests (all crates including atomic-core unit tests)
+cargo test
+
+# Check/build specific crate
+cargo check -p atomic-core
+cargo test -p atomic-core
+cargo check -p atomic-server
+cargo test -p atomic-server
+
+# Run standalone server
+cargo run -p atomic-server -- --db-path /path/to/atomic.db serve --port 8080
+
+# Token management CLI
+cargo run -p atomic-server -- --db-path /path/to/atomic.db token create --name "my-laptop"
+cargo run -p atomic-server -- --db-path /path/to/atomic.db token list
+cargo run -p atomic-server -- --db-path /path/to/atomic.db token revoke <token-id>
 ```
 
 ### Utility Scripts
@@ -125,7 +235,25 @@ cd src-tauri && cargo test
 # Import Wikipedia articles for stress testing (requires app to be run once first)
 npm run import:wikipedia        # Import 500 articles (default)
 npm run import:wikipedia 1000   # Import custom number of articles
-npm run import:wikipedia 500 --db /path/to/atomic.db  # Custom database path
+
+# Import RSS feeds
+npm run import:rss
+
+# Build standalone MCP bridge binary
+npm run build:mcp-bridge
+
+# Run Tauri with a fresh database (for testing)
+npm run tauri:fresh
+
+# Database management
+npm run db:reset               # Reset database (interactive)
+npm run db:reset:force         # Force reset with backup
+npm run db:reset-tags:force    # Reset tags only
+npm run db:reset-chunks:force  # Reset chunks only
+
+# Release builds
+npm run release:patch          # Bump patch version and build
+npm run release:minor          # Bump minor version and build
 ```
 
 ## Database
@@ -136,174 +264,29 @@ The SQLite database is stored in the Tauri app data directory:
 - Linux: `~/.local/share/com.atomic.app/atomic.db`
 - Windows: `%APPDATA%/com.atomic.app/atomic.db`
 
-### Schema
-```sql
--- Core content units
-CREATE TABLE atoms (
-  id TEXT PRIMARY KEY,  -- UUID
-  content TEXT NOT NULL,
-  source_url TEXT,
-  created_at TEXT NOT NULL,  -- ISO 8601
-  updated_at TEXT NOT NULL,
-  embedding_status TEXT DEFAULT 'pending'  -- 'pending', 'processing', 'complete', 'failed'
-);
-
--- Hierarchical tags
-CREATE TABLE tags (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  parent_id TEXT REFERENCES tags(id) ON DELETE SET NULL,
-  created_at TEXT NOT NULL
-);
-
--- Many-to-many relationship
-CREATE TABLE atom_tags (
-  atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
-  tag_id TEXT REFERENCES tags(id) ON DELETE CASCADE,
-  PRIMARY KEY (atom_id, tag_id)
-);
-
--- Chunked content with embeddings
-CREATE TABLE atom_chunks (
-  id TEXT PRIMARY KEY,
-  atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
-  chunk_index INTEGER NOT NULL,
-  content TEXT NOT NULL,
-  embedding BLOB  -- 384-dimensional float vector from sqlite-lembed
-);
-
--- Vector similarity search (sqlite-vec virtual table)
-CREATE VIRTUAL TABLE vec_chunks USING vec0(
-  chunk_id TEXT PRIMARY KEY,
-  embedding float[384]
-);
-
--- App settings (key-value store)
-CREATE TABLE settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
--- Wiki articles for tags
-CREATE TABLE wiki_articles (
-  id TEXT PRIMARY KEY,
-  tag_id TEXT UNIQUE REFERENCES tags(id) ON DELETE CASCADE,
-  content TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  atom_count INTEGER NOT NULL
-);
-
--- Citations linking article content to source atoms/chunks
-CREATE TABLE wiki_citations (
-  id TEXT PRIMARY KEY,
-  wiki_article_id TEXT REFERENCES wiki_articles(id) ON DELETE CASCADE,
-  citation_index INTEGER NOT NULL,
-  atom_id TEXT REFERENCES atoms(id) ON DELETE CASCADE,
-  chunk_index INTEGER,
-  excerpt TEXT NOT NULL
-);
-
--- Atom positions for canvas view
-CREATE TABLE atom_positions (
-  atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
-  x REAL NOT NULL,
-  y REAL NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
--- Chat conversations
-CREATE TABLE conversations (
-  id TEXT PRIMARY KEY,
-  title TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  is_archived INTEGER DEFAULT 0
-);
-
--- Many-to-many: conversation tag scope
-CREATE TABLE conversation_tags (
-  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-  PRIMARY KEY (conversation_id, tag_id)
-);
-
--- Chat messages
-CREATE TABLE chat_messages (
-  id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  role TEXT NOT NULL,  -- 'user', 'assistant', 'system', 'tool'
-  content TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  message_index INTEGER NOT NULL
-);
-
--- Tool calls for transparency
-CREATE TABLE chat_tool_calls (
-  id TEXT PRIMARY KEY,
-  message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
-  tool_name TEXT NOT NULL,
-  tool_input TEXT NOT NULL,
-  tool_output TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at TEXT NOT NULL,
-  completed_at TEXT
-);
-
--- Chat citations
-CREATE TABLE chat_citations (
-  id TEXT PRIMARY KEY,
-  message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
-  citation_index INTEGER NOT NULL,
-  atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
-  chunk_index INTEGER,
-  excerpt TEXT NOT NULL,
-  relevance_score REAL
-);
-
--- Semantic edges for graph visualization (pre-computed during embedding)
-CREATE TABLE semantic_edges (
-  id TEXT PRIMARY KEY,
-  source_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
-  target_atom_id TEXT NOT NULL REFERENCES atoms(id) ON DELETE CASCADE,
-  similarity_score REAL NOT NULL,
-  source_chunk_index INTEGER,
-  target_chunk_index INTEGER,
-  created_at TEXT NOT NULL,
-  UNIQUE(source_atom_id, target_atom_id)
-);
-
--- Atom cluster assignments for visual grouping
-CREATE TABLE atom_clusters (
-  atom_id TEXT PRIMARY KEY REFERENCES atoms(id) ON DELETE CASCADE,
-  cluster_id INTEGER NOT NULL,
-  computed_at TEXT NOT NULL
-);
-
--- FTS5 virtual table for keyword search
-CREATE VIRTUAL TABLE atom_chunks_fts USING fts5(
-  chunk_id,
-  content,
-  content='atom_chunks',
-  content_rowid='rowid'
-);
-
-```
-
 ### Settings Keys
+
+**Provider selection:**
+- `provider`: "openrouter" or "ollama" (default: "openrouter")
+
+**OpenRouter settings:**
 - `openrouter_api_key`: User's OpenRouter API key for LLM and embedding access
-- `auto_tagging_enabled`: "true" or "false" (default: "true")
 - `embedding_model`: Model for embeddings (default: "openai/text-embedding-3-small")
   - Supported: `openai/text-embedding-3-small` (1536 dim), `openai/text-embedding-3-large` (3072 dim)
   - Changing dimension requires re-embedding all atoms (handled automatically)
 - `tagging_model`: Model for tag extraction (default: "openai/gpt-4o-mini")
-  - Supported: `openai/gpt-4o-mini`, `openai/gpt-5-nano`, `openai/gpt-5-mini`, `anthropic/claude-sonnet-4.5`
 - `wiki_model`: Model for wiki generation (default: "anthropic/claude-sonnet-4.5")
-  - Supported: `anthropic/claude-sonnet-4.5`, `openai/gpt-4o-mini`, `openai/gpt-5-nano`
 - `chat_model`: Model for chat (default: "anthropic/claude-sonnet-4.5")
-  - Supported: `anthropic/claude-sonnet-4.5`, `openai/gpt-4o-mini`, `openai/gpt-5-nano`
 
-Note: LLM models are restricted to those supporting structured outputs via OpenRouter.
+**Ollama settings:**
+- `ollama_host`: Ollama server URL (default: "http://127.0.0.1:11434")
+- `ollama_embedding_model`: Embedding model name (default: "nomic-embed-text")
+- `ollama_llm_model`: LLM model name (default: "llama3.2")
+
+**General:**
+- `auto_tagging_enabled`: "true" or "false" (default: "true")
+
+Note: When using OpenRouter, LLM models are restricted to those supporting structured outputs. Ollama models are auto-discovered from the running server.
 
 ## Tauri Commands (API)
 
@@ -378,9 +361,17 @@ Note: LLM models are restricted to those supporting structured outputs via OpenR
 - `get_ollama_llm_models_cmd(host)` → `Vec<AvailableModel>` (LLM models only)
 - `verify_provider_configured()` → `bool` (check if provider has required settings)
 
+### Import Operations
+- `import_obsidian_vault(vault_path, max_notes?)` → `ImportResult` (import from Obsidian vault)
+
+### MCP Operations
+- `get_mcp_bridge_path()` → `String` (path to standalone MCP bridge binary)
+- `get_mcp_config()` → `serde_json::Value` (MCP configuration for Claude integration)
+
 ### Utility Operations
 - `check_sqlite_vec()` → `String` (version check)
 - `compact_tags()` → `CompactionResult` (LLM-assisted tag categorization and merging)
+- `get_all_wiki_articles()` → `Vec<WikiArticleWithCitations>` (all wiki articles)
 
 ## Tauri Events
 
@@ -393,10 +384,28 @@ Payload:
   atom_id: string;
   status: 'complete' | 'failed';
   error?: string;
+}
+```
+
+### tagging-complete
+Emitted when tag extraction completes (separate from embedding).
+
+Payload:
+```typescript
+{
+  atom_id: string;
+  status: 'complete' | 'failed' | 'skipped';
+  error?: string;
   tags_extracted: string[];      // IDs of all tags applied
   new_tags_created: string[];    // IDs of newly created tags
 }
 ```
+
+### atom-created
+Emitted when an atom is created via the HTTP API (browser extension). Triggers UI refresh.
+
+### embeddings-reset
+Emitted when the embedding model/dimension changes and all atoms need re-embedding.
 
 ### Chat Events
 Events emitted during chat agent loop:
@@ -434,7 +443,7 @@ Events emitted during chat agent loop:
 3. If no article exists, shows empty state with "Generate Article" button
 4. Generation fetches relevant chunks from atoms with that tag
 5. Chunks are ranked by embedding similarity to tag name
-6. Top chunks are sent to OpenRouter LLM with generation prompt
+6. Top chunks are sent to configured LLM provider (OpenRouter or Ollama) with generation prompt
 7. LLM returns markdown article with [N] citations
 8. Citations are extracted and mapped to source atoms/chunks
 9. Article and citations are saved to database
@@ -455,8 +464,7 @@ When new atoms are added after article generation:
 - Popover closes on click outside or Escape key
 
 ### Structured Outputs
-Wiki generation uses OpenRouter's structured outputs:
-- `response_format.type`: `"json_schema"` with strict validation
+Wiki generation uses structured outputs (via OpenRouter or Ollama JSON mode):
 - Schema: `article_content` (string) and `citations_used` (array of integers)
 - Temperature: 0.3 for consistent output
 - Max tokens: 4000 for longer articles
@@ -466,7 +474,7 @@ Wiki generation uses OpenRouter's structured outputs:
 ### How It Works
 1. When an atom is created/updated, the embedding pipeline runs
 2. If auto-tagging is enabled and API key is set, tag extraction runs in parallel with embedding
-3. Each content chunk is sent to OpenRouter using the configured tagging model (default: openai/gpt-4o-mini) with the existing tag hierarchy
+3. Each content chunk is sent to the configured provider (OpenRouter or Ollama) using the tagging model with the existing tag hierarchy
 4. The LLM identifies existing tags that apply and suggests new tags if needed
 5. Results from all chunks are merged and deduplicated
 6. Existing tags are linked to the atom; new tags are created with proper hierarchy
@@ -479,10 +487,10 @@ The tagging model can be configured in Settings:
 - Any OpenRouter model ID that supports structured outputs can be used
 
 ### Structured Outputs
-The tag extraction uses OpenRouter's structured outputs feature to guarantee valid JSON responses:
-- `response_format.type`: `"json_schema"` with strict schema validation
-- `provider.require_parameters`: `true` to ensure the provider supports structured outputs
+Tag extraction uses structured outputs to guarantee valid JSON responses:
 - Schema enforces the exact structure: `existing_tag_ids` (array of strings) and `new_tags` (array of objects with name, parent_id, suggested_category)
+- OpenRouter uses `response_format.type: "json_schema"` with strict validation
+- Ollama uses JSON mode with schema in the prompt
 
 ### Tag Categories
 New tags are automatically placed under category tags:
@@ -548,20 +556,41 @@ Content is chunked using a markdown-aware, overlapping strategy optimized for RA
 
 ## Key Dependencies
 
-### Rust (Cargo.toml)
-- `tauri` = "2"
-- `tauri-plugin-opener` = "2"
+### Rust — atomic-core (Cargo.toml)
 - `rusqlite` = { version = "0.32", features = ["bundled", "load_extension"] }
 - `sqlite-vec` = "0.1.6"
+- `tokio` = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+- `reqwest` = { version = "0.12", features = ["json", "stream"] }
 - `serde` = { version = "1", features = ["derive"] }
 - `serde_json` = "1"
 - `uuid` = { version = "1", features = ["v4"] }
 - `chrono` = { version = "0.4", features = ["serde"] }
-- `zerocopy` = { version = "0.8", features = ["derive"] }
-- `tokio` = { version = "1", features = ["full"] }
-- `reqwest` = { version = "0.12", features = ["json"] }
-- `regex` = "1"
 - `tiktoken-rs` = "0.6"
+- `thiserror` = "1"
+- `async-trait` = "0.1"
+- `glob` = "0.3" (obsidian import)
+- `yaml-rust2` = "0.9" (obsidian import)
+
+### Rust — atomic-server (Cargo.toml)
+- `atomic-core` = { path = "../atomic-core" }
+- `actix-web` = "4.9"
+- `actix-cors` = "0.7"
+- `actix-ws` = "0.3"
+- `tokio` = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "signal"] }
+- `clap` = { version = "4", features = ["derive"] }
+- `reqwest` = { version = "0.12", features = ["json"] }
+- `rusqlite` = { version = "0.32", features = ["bundled"] }
+
+### Rust — src-tauri (Cargo.toml)
+- `tauri` = "2"
+- `atomic-core` = { path = "../crates/atomic-core" }
+- `actix-web` = "4.9"
+- `actix-cors` = "0.7"
+- `rmcp` = { version = "0.10", features = ["server", "macros"] }
+- `rmcp-actix-web` = "0.8"
+- `schemars` = "1.0"
+- `tauri-plugin-dialog` = "2"
+- `tauri-plugin-shell` = "2"
 
 ### Frontend (package.json)
 - `@tauri-apps/api` = "^2.0.0"
@@ -575,10 +604,115 @@ Content is chunked using a markdown-aware, overlapping strategy optimized for RA
 - `tailwindcss` = "^4.0.0"
 - `@tailwindcss/vite` = "^4.0.0"
 - `@tailwindcss/typography` = "^0.5.19"
+- `@tanstack/react-virtual` = "^3.13.18"
 - `d3-force` = "^3.0.0"
-- `react-zoom-pan-pinch` = "^3.0.0"
-- `@types/d3-force` = "^3.0.0" (dev)
+- `react-zoom-pan-pinch` = "^3.7.0"
+- `@types/d3-force` = "^3.0.10" (dev)
 - `better-sqlite3` = "^11.5.0" (dev, for import scripts)
+
+## HTTP Servers & MCP
+
+### Embedded HTTP Server (Tauri, actix-web)
+An HTTP server runs alongside the Tauri app on `http://127.0.0.1:44380` for external integrations:
+- `GET /health` — Health check with version info
+- `POST /atoms` — Create atom (used by browser extension)
+- `/mcp/*` — MCP (Model Context Protocol) endpoint for Claude integration
+
+The embedded server uses `AppState` containing `SharedDatabase` and `AppHandle`, delegating to `atomic-core` for business logic.
+
+### Standalone Server (`atomic-server`)
+A standalone HTTP server (`crates/atomic-server/`) wrapping `atomic-core` with a full REST API. No Tauri dependency — runs headless.
+
+**Auth**: All `/api/*` routes require `Authorization: Bearer <token>`. Tokens are named, revocable API tokens stored as SHA-256 hashes in the `api_tokens` table. A default token is auto-created on first run and printed to stdout. Manage tokens via CLI (`atomic-server token create/list/revoke`) or REST API (`/api/auth/tokens`). `/health` and `/ws` skip auth (WebSocket uses `?token=xxx` query param).
+
+**CLI**: `cargo run -p atomic-server -- --db-path <path> serve --port 8080 --bind 127.0.0.1`
+Token management: `cargo run -p atomic-server -- --db-path <path> token create --name "name"`, `token list`, `token revoke <id>`
+
+**REST API** (~47 endpoints):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check (no auth) |
+| GET | `/ws?token=xxx` | WebSocket for push events |
+| **Atoms** | | |
+| GET | `/api/atoms` | List atoms (optional `?tag_id=x` filter) |
+| GET | `/api/atoms/:id` | Get atom |
+| POST | `/api/atoms` | Create atom |
+| PUT | `/api/atoms/:id` | Update atom |
+| DELETE | `/api/atoms/:id` | Delete atom |
+| **Tags** | | |
+| GET | `/api/tags` | List tags |
+| POST | `/api/tags` | Create tag |
+| PUT | `/api/tags/:id` | Update tag |
+| DELETE | `/api/tags/:id` | Delete tag |
+| **Search** | | |
+| POST | `/api/search` | Search (body: `{ query, mode, limit?, threshold? }`) |
+| GET | `/api/atoms/:id/similar` | Find similar atoms |
+| **Wiki** | | |
+| GET | `/api/wiki` | List all wiki articles |
+| GET | `/api/wiki/:tag_id` | Get wiki article |
+| GET | `/api/wiki/:tag_id/status` | Get article status |
+| POST | `/api/wiki/:tag_id/generate` | Generate wiki article |
+| POST | `/api/wiki/:tag_id/update` | Update wiki article |
+| DELETE | `/api/wiki/:tag_id` | Delete wiki article |
+| **Settings** | | |
+| GET | `/api/settings` | Get all settings |
+| PUT | `/api/settings/:key` | Set a setting |
+| POST | `/api/settings/test-openrouter` | Test OpenRouter connection |
+| GET | `/api/settings/models` | List available LLM models |
+| **Embedding** | | |
+| POST | `/api/embeddings/process-pending` | Process pending embeddings |
+| POST | `/api/embeddings/process-tagging` | Process pending tagging |
+| POST | `/api/embeddings/retry/:atom_id` | Retry embedding |
+| POST | `/api/embeddings/reset-stuck` | Reset stuck processing |
+| GET | `/api/atoms/:id/embedding-status` | Get embedding status |
+| **Canvas** | | |
+| GET | `/api/canvas/positions` | Get atom positions |
+| PUT | `/api/canvas/positions` | Save atom positions |
+| GET | `/api/canvas/atoms-with-embeddings` | Get atoms with embeddings |
+| **Graph** | | |
+| GET | `/api/graph/edges` | Get semantic edges |
+| GET | `/api/graph/neighborhood/:atom_id` | Get atom neighborhood |
+| POST | `/api/graph/rebuild-edges` | Rebuild semantic edges |
+| **Clustering** | | |
+| POST | `/api/clustering/compute` | Compute clusters |
+| GET | `/api/clustering` | Get clusters |
+| GET | `/api/clustering/connection-counts` | Get connection counts |
+| **Chat** | | |
+| POST | `/api/conversations` | Create conversation |
+| GET | `/api/conversations` | List conversations |
+| GET | `/api/conversations/:id` | Get conversation with messages |
+| PUT | `/api/conversations/:id` | Update conversation |
+| DELETE | `/api/conversations/:id` | Delete conversation |
+| PUT | `/api/conversations/:id/scope` | Set conversation scope |
+| POST | `/api/conversations/:id/scope/tags` | Add tag to scope |
+| DELETE | `/api/conversations/:id/scope/tags/:tag_id` | Remove tag from scope |
+| POST | `/api/conversations/:id/messages` | Send message (triggers agent loop) |
+| **Ollama** | | |
+| POST | `/api/ollama/test` | Test Ollama connection |
+| GET | `/api/ollama/models` | List all Ollama models |
+| GET | `/api/ollama/embedding-models` | List embedding models |
+| GET | `/api/ollama/llm-models` | List LLM models |
+| GET | `/api/provider/verify` | Verify provider configured |
+| **Auth / Tokens** | | |
+| POST | `/api/auth/tokens` | Create named API token (returns raw token once) |
+| GET | `/api/auth/tokens` | List all tokens (metadata only) |
+| DELETE | `/api/auth/tokens/:id` | Revoke a token |
+| **Utils** | | |
+| GET | `/api/utils/sqlite-vec` | Check sqlite-vec version |
+| POST | `/api/utils/compact-tags` | Compact tags via LLM |
+
+**WebSocket Events**: Clients receive `ServerEvent` JSON messages covering embedding pipeline events (`EmbeddingStarted`, `EmbeddingComplete`, `EmbeddingFailed`, `TaggingComplete`, `TaggingFailed`, `TaggingSkipped`) and chat streaming events (`ChatStreamDelta`, `ChatToolStart`, `ChatToolComplete`, `ChatComplete`, `ChatError`). All events include a `type` field for discrimination.
+
+### MCP Server
+The MCP integration provides tools for Claude and other MCP clients:
+- `semantic_search(query, limit?, threshold?)` — Search atoms by semantic similarity
+- `read_atom(atom_id, limit?, offset?)` — Read atom content
+
+Available as:
+1. **Integrated** — Runs within the Tauri app's HTTP server at `/mcp`
+2. **Standalone** — `atomic-mcp` binary for use without the desktop app
+3. **Bridge** — `mcp-bridge` binary for HTTP-to-stdio protocol bridging
 
 ## Design System (Dark Theme - Obsidian-inspired)
 

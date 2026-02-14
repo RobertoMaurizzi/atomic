@@ -11,12 +11,18 @@ import {
   getOllamaModels,
   importObsidianVault,
   getMcpConfig,
+  listApiTokens,
+  createApiToken,
+  revokeApiToken,
   type AvailableModel,
   type OllamaModel,
   type ImportResult,
-  type McpConfig
-} from '../../lib/tauri';
-import { open } from '@tauri-apps/plugin-dialog';
+  type McpConfig,
+  type ApiTokenInfo,
+  type CreateTokenResponse,
+} from '../../lib/api';
+import { getTransport, switchTransport, switchToLocal, type HttpTransportConfig } from '../../lib/transport';
+import { pickDirectory } from '../../lib/platform';
 
 interface SelectOption {
   value: string;
@@ -406,6 +412,25 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
   const [mcpConfig, setMcpConfig] = useState<McpConfig | null>(null);
   const [mcpConfigCopied, setMcpConfigCopied] = useState(false);
 
+  // Remote server state
+  const [serverUrl, setServerUrl] = useState('');
+  const [serverToken, setServerToken] = useState('');
+  const [isTestingServer, setIsTestingServer] = useState(false);
+  const [serverTestResult, setServerTestResult] = useState<'success' | 'error' | null>(null);
+  const [serverTestError, setServerTestError] = useState<string | null>(null);
+  const [isRemoteMode, setIsRemoteMode] = useState(getTransport().mode === 'http');
+  const [showChangeServer, setShowChangeServer] = useState(false);
+
+  // API Token management state
+  const [apiTokens, setApiTokens] = useState<ApiTokenInfo[]>([]);
+  const [isLoadingTokens, setIsLoadingTokens] = useState(false);
+  const [newTokenName, setNewTokenName] = useState('');
+  const [isCreatingToken, setIsCreatingToken] = useState(false);
+  const [createdToken, setCreatedToken] = useState<CreateTokenResponse | null>(null);
+  const [tokenCopied, setTokenCopied] = useState(false);
+  const [showTokenSection, setShowTokenSection] = useState(false);
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+
   const overlayRef = useRef<HTMLDivElement>(null);
 
   // Check Ollama connection
@@ -432,17 +457,160 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
     }
   }, []);
 
+  // Test remote server connection
+  const handleTestServer = async () => {
+    if (!serverUrl.trim() || !serverToken.trim()) return;
+    setIsTestingServer(true);
+    setServerTestResult(null);
+    setServerTestError(null);
+    try {
+      const resp = await fetch(`${serverUrl.trim().replace(/\/$/, '')}/health`);
+      if (resp.ok) {
+        setServerTestResult('success');
+      } else {
+        setServerTestResult('error');
+        setServerTestError(`Server returned ${resp.status}`);
+      }
+    } catch (e) {
+      setServerTestResult('error');
+      setServerTestError(String(e));
+    } finally {
+      setIsTestingServer(false);
+    }
+  };
+
+  const handleConnectServer = async () => {
+    try {
+      await switchTransport({ baseUrl: serverUrl.trim().replace(/\/$/, ''), authToken: serverToken.trim() });
+      setIsRemoteMode(true);
+      setShowChangeServer(false);
+      // In setup mode, close to let Layout re-check and initialize
+      if (isSetupMode) {
+        onClose();
+        return;
+      }
+      // Refresh data from new source
+      fetchSettings();
+      fetchAtoms();
+      fetchTags();
+    } catch (e) {
+      setServerTestResult('error');
+      setServerTestError(String(e));
+    }
+  };
+
+  const handleDisconnectServer = async () => {
+    try {
+      await switchToLocal();
+      setIsRemoteMode(false);
+      // Refresh data from local source
+      fetchSettings();
+      fetchAtoms();
+      fetchTags();
+    } catch (e) {
+      console.error('Failed to switch to local:', e);
+    }
+  };
+
+  // Load API tokens for remote mode
+  const loadApiTokens = useCallback(async () => {
+    setIsLoadingTokens(true);
+    try {
+      const tokens = await listApiTokens();
+      setApiTokens(tokens);
+    } catch (e) {
+      console.error('Failed to load API tokens:', e);
+    } finally {
+      setIsLoadingTokens(false);
+    }
+  }, []);
+
+  // Create new API token
+  const handleCreateToken = async () => {
+    if (!newTokenName.trim() || isCreatingToken) return;
+    setIsCreatingToken(true);
+    try {
+      const result = await createApiToken(newTokenName.trim());
+      setCreatedToken(result);
+      setNewTokenName('');
+      setTokenCopied(false);
+      // Refresh token list
+      await loadApiTokens();
+    } catch (e) {
+      console.error('Failed to create token:', e);
+    } finally {
+      setIsCreatingToken(false);
+    }
+  };
+
+  // Revoke an API token
+  const handleRevokeToken = async (tokenId: string) => {
+    // Check if revoking the current token
+    const currentPrefix = serverToken.substring(0, 10);
+    const tokenToRevoke = apiTokens.find(t => t.id === tokenId);
+    const isCurrentToken = tokenToRevoke && tokenToRevoke.token_prefix === currentPrefix;
+
+    try {
+      await revokeApiToken(tokenId);
+      if (isCurrentToken) {
+        // Revoking current token — log out
+        localStorage.removeItem('atomic-server-config');
+        window.location.reload();
+        return;
+      }
+      // Refresh list
+      await loadApiTokens();
+    } catch (e) {
+      console.error('Failed to revoke token:', e);
+    } finally {
+      setConfirmRevokeId(null);
+    }
+  };
+
+  // Copy created token to clipboard
+  const handleCopyToken = async () => {
+    if (!createdToken) return;
+    try {
+      await navigator.clipboard.writeText(createdToken.token);
+      setTokenCopied(true);
+      setTimeout(() => setTokenCopied(false), 2000);
+    } catch (e) {
+      console.error('Failed to copy:', e);
+    }
+  };
+
   useEffect(() => {
     if (isOpen) {
-      fetchSettings();
-      // Fetch OpenRouter models
-      setIsLoadingModels(true);
-      getAvailableLlmModels()
-        .then(models => setAvailableModels(models))
-        .catch(err => console.error('Failed to load models:', err))
-        .finally(() => setIsLoadingModels(false));
+      // Load saved server config
+      const saved = localStorage.getItem('atomic-server-config');
+      if (saved) {
+        const config: HttpTransportConfig = JSON.parse(saved);
+        setServerUrl(config.baseUrl);
+        setServerToken(config.authToken);
+      }
+      setIsRemoteMode(getTransport().mode === 'http');
+      // Only fetch settings/models if transport is actually connected
+      const transport = getTransport();
+      if (transport.mode === 'tauri' || transport.isConnected()) {
+        fetchSettings();
+        // Fetch OpenRouter models
+        setIsLoadingModels(true);
+        getAvailableLlmModels()
+          .then(models => setAvailableModels(models))
+          .catch(err => console.error('Failed to load models:', err))
+          .finally(() => setIsLoadingModels(false));
+      }
+      // Load API tokens when in remote mode and connected
+      if (transport.mode === 'http' && transport.isConnected()) {
+        loadApiTokens();
+      }
+      // Reset token creation state
+      setCreatedToken(null);
+      setTokenCopied(false);
+      setShowTokenSection(false);
+      setConfirmRevokeId(null);
     }
-  }, [isOpen, fetchSettings]);
+  }, [isOpen, fetchSettings, loadApiTokens]);
 
   // Load settings into state
   useEffect(() => {
@@ -619,19 +787,15 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
 
     try {
       // Open folder picker dialog
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: 'Select Obsidian Vault',
-      });
+      const selected = await pickDirectory('Select Obsidian Vault');
 
       if (!selected) {
-        return; // User cancelled
+        return; // User cancelled or not available in web mode
       }
 
       setIsImporting(true);
 
-      const result = await importObsidianVault(selected as string);
+      const result = await importObsidianVault(selected);
       setImportResult(result);
 
       // Refresh atoms and tags to show imported content
@@ -655,6 +819,9 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
     .filter(m => !m.is_embedding)
     .map(m => ({ id: m.id, name: m.name }));
 
+  // In web mode during setup, we need to connect to a server first
+  const needsServerConnection = getTransport().mode === 'http' && !getTransport().isConnected();
+
   if (!isOpen) return null;
 
   return createPortal(
@@ -672,7 +839,7 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
             </h2>
             {isSetupMode && (
               <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-                Configure an AI provider to get started
+                {needsServerConnection ? 'Connect to an Atomic server to get started' : 'Configure an AI provider to get started'}
               </p>
             )}
           </div>
@@ -690,6 +857,57 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
 
         {/* Content */}
         <div className="px-6 py-4 space-y-6 overflow-y-auto flex-1">
+
+          {/* Web setup: server connection required first */}
+          {needsServerConnection && (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                  Server URL
+                </label>
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  Enter the URL and auth token of your running atomic-server
+                </p>
+              </div>
+              <input
+                type="text"
+                value={serverUrl}
+                onChange={(e) => { setServerUrl(e.target.value); setServerTestResult(null); }}
+                placeholder="http://localhost:8080"
+                className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+              <input
+                type="password"
+                value={serverToken}
+                onChange={(e) => { setServerToken(e.target.value); setServerTestResult(null); }}
+                placeholder="Auth token (printed by server on startup)"
+                className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={handleTestServer} disabled={!serverUrl.trim() || !serverToken.trim() || isTestingServer}>
+                  {isTestingServer ? 'Testing...' : 'Test Connection'}
+                </Button>
+                <Button onClick={handleConnectServer} disabled={serverTestResult !== 'success'}>
+                  Connect
+                </Button>
+              </div>
+              {serverTestResult === 'success' && (
+                <div className="text-sm text-green-500">Server reachable</div>
+              )}
+              {serverTestResult === 'error' && (
+                <div className="text-sm text-red-500">{serverTestError}</div>
+              )}
+              <div className="p-3 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-xs text-[var(--color-text-secondary)] space-y-1">
+                <p>Start the server with:</p>
+                <code className="block text-[var(--color-text-primary)]">cargo run -p atomic-server -- --db-path /path/to/atomic.db</code>
+                <p>The auth token is printed to stdout on startup.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Normal settings content — hidden when server connection is needed */}
+          {!needsServerConnection && <>
+
           {/* Theme Selector */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-[var(--color-text-primary)]">
@@ -1007,8 +1225,267 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
             </button>
           </div>
 
-          {/* Import Section */}
-          {!isSetupMode && (
+          {/* Connect to Server Section */}
+          {!isSetupMode && !isRemoteMode && (
+            <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
+              <div className="space-y-1">
+                <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                  Remote Server
+                </label>
+                <p className="text-xs text-[var(--color-text-secondary)]">
+                  Connect to a remote atomic-server instance
+                </p>
+              </div>
+              <input
+                type="text"
+                value={serverUrl}
+                onChange={(e) => { setServerUrl(e.target.value); setServerTestResult(null); }}
+                placeholder="http://localhost:8080"
+                className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+              <input
+                type="password"
+                value={serverToken}
+                onChange={(e) => { setServerToken(e.target.value); setServerTestResult(null); }}
+                placeholder="Auth token"
+                className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+              />
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={handleTestServer} disabled={!serverUrl.trim() || !serverToken.trim() || isTestingServer}>
+                  {isTestingServer ? 'Testing...' : 'Test'}
+                </Button>
+                <Button onClick={handleConnectServer} disabled={serverTestResult !== 'success'}>
+                  Connect
+                </Button>
+              </div>
+              {serverTestResult === 'success' && (
+                <div className="text-sm text-green-500">Server reachable</div>
+              )}
+              {serverTestResult === 'error' && (
+                <div className="text-sm text-red-500">{serverTestError}</div>
+              )}
+            </div>
+          )}
+
+          {/* Connected to remote — show status with change/disconnect options */}
+          {isRemoteMode && (
+            <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                    Remote Server
+                  </label>
+                  <p className="text-xs text-green-500 flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                    Connected to {serverUrl}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={() => setShowChangeServer(!showChangeServer)}>
+                    {showChangeServer ? 'Cancel' : 'Change'}
+                  </Button>
+                  {(typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) ? (
+                    <Button variant="secondary" onClick={handleDisconnectServer}>
+                      Disconnect
+                    </Button>
+                  ) : (
+                    <Button variant="secondary" onClick={() => {
+                      localStorage.removeItem('atomic-server-config');
+                      window.location.reload();
+                    }}>
+                      Log Out
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {showChangeServer && (
+                <div className="space-y-3 pt-2">
+                  <input
+                    type="text"
+                    value={serverUrl}
+                    onChange={(e) => { setServerUrl(e.target.value); setServerTestResult(null); }}
+                    placeholder="http://localhost:8080"
+                    className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+                  />
+                  <input
+                    type="password"
+                    value={serverToken}
+                    onChange={(e) => { setServerToken(e.target.value); setServerTestResult(null); }}
+                    placeholder="Auth token"
+                    className="w-full px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+                  />
+                  <div className="flex gap-2">
+                    <Button variant="secondary" onClick={handleTestServer} disabled={!serverUrl.trim() || !serverToken.trim() || isTestingServer}>
+                      {isTestingServer ? 'Testing...' : 'Test'}
+                    </Button>
+                    <Button onClick={handleConnectServer} disabled={serverTestResult !== 'success'}>
+                      Reconnect
+                    </Button>
+                  </div>
+                  {serverTestResult === 'success' && (
+                    <div className="text-sm text-green-500">Server reachable</div>
+                  )}
+                  {serverTestResult === 'error' && (
+                    <div className="text-sm text-red-500">{serverTestError}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* API Tokens Section — remote mode only */}
+          {isRemoteMode && getTransport().isConnected() && (
+            <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
+              <button
+                type="button"
+                onClick={() => setShowTokenSection(!showTokenSection)}
+                className="flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)] hover:text-white transition-colors w-full"
+              >
+                <svg
+                  className={`w-4 h-4 transition-transform ${showTokenSection ? 'rotate-90' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                API Tokens
+                {apiTokens.filter(t => !t.is_revoked).length > 0 && (
+                  <span className="text-xs text-[var(--color-text-secondary)]">
+                    ({apiTokens.filter(t => !t.is_revoked).length} active)
+                  </span>
+                )}
+              </button>
+
+              {showTokenSection && (
+                <div className="space-y-4 pl-6 border-l-2 border-[var(--color-border)]">
+                  <p className="text-xs text-[var(--color-text-secondary)]">
+                    Manage API tokens for accessing this server. Each device or integration should use its own token.
+                  </p>
+
+                  {/* Token list */}
+                  {isLoadingTokens ? (
+                    <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Loading tokens...
+                    </div>
+                  ) : apiTokens.length === 0 ? (
+                    <div className="text-sm text-[var(--color-text-secondary)]">No tokens found.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {apiTokens.filter(t => !t.is_revoked).map((token) => {
+                        const isCurrentToken = token.token_prefix === serverToken.substring(0, 10);
+                        return (
+                          <div
+                            key={token.id}
+                            className={`p-3 bg-[var(--color-bg-card)] border rounded-md text-sm ${
+                              isCurrentToken ? 'border-green-500/50' : 'border-[var(--color-border)]'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-[var(--color-text-primary)]">{token.name}</span>
+                                {isCurrentToken && (
+                                  <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">current</span>
+                                )}
+                              </div>
+                              {confirmRevokeId === token.id ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-amber-400">
+                                    {isCurrentToken ? 'This will log you out!' : 'Revoke?'}
+                                  </span>
+                                  <button
+                                    onClick={() => handleRevokeToken(token.id)}
+                                    className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    onClick={() => setConfirmRevokeId(null)}
+                                    className="text-xs px-2 py-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setConfirmRevokeId(token.id)}
+                                  className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                                >
+                                  Revoke
+                                </button>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 mt-1 text-xs text-[var(--color-text-secondary)]">
+                              <span className="font-mono">{token.token_prefix}...</span>
+                              <span>Created {new Date(token.created_at).toLocaleDateString()}</span>
+                              {token.last_used_at && (
+                                <span>Last used {new Date(token.last_used_at).toLocaleDateString()}</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Created token display (shown once after creation) */}
+                  {createdToken && (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-md space-y-2">
+                      <div className="text-sm font-medium text-amber-400">
+                        Token created — save it now, it won't be shown again
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 text-xs font-mono bg-[var(--color-bg-main)] px-2 py-1.5 rounded border border-[var(--color-border)] text-[var(--color-text-primary)] break-all select-all">
+                          {createdToken.token}
+                        </code>
+                        <button
+                          onClick={handleCopyToken}
+                          className="p-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors flex-shrink-0"
+                          title="Copy to clipboard"
+                        >
+                          {tokenCopied ? (
+                            <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Create new token */}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newTokenName}
+                      onChange={(e) => setNewTokenName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleCreateToken(); }}
+                      placeholder="Token name (e.g. laptop, phone)"
+                      className="flex-1 px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent transition-colors duration-150 text-sm"
+                    />
+                    <Button
+                      variant="secondary"
+                      onClick={handleCreateToken}
+                      disabled={!newTokenName.trim() || isCreatingToken}
+                    >
+                      {isCreatingToken ? 'Creating...' : 'Create'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Import Section — desktop/local only */}
+          {!isSetupMode && !isRemoteMode && (
             <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-[var(--color-text-primary)]">
@@ -1069,8 +1546,8 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
             </div>
           )}
 
-          {/* MCP Server Setup Section */}
-          {!isSetupMode && (
+          {/* MCP Server Setup Section — desktop/local only */}
+          {!isSetupMode && !isRemoteMode && (
             <div className="space-y-3 pt-4 border-t border-[var(--color-border)]">
               <button
                 type="button"
@@ -1145,9 +1622,12 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
               )}
             </div>
           )}
+
+          </>}
         </div>
 
-        {/* Footer */}
+        {/* Footer — hidden during server connection setup */}
+        {!needsServerConnection && (
         <div className="px-6 py-4 border-t border-[var(--color-border)] space-y-3">
           {/* Save Error */}
           {saveError && (
@@ -1169,6 +1649,7 @@ export function SettingsModal({ isOpen, onClose, isSetupMode = false }: Settings
             </Button>
           </div>
         </div>
+        )}
       </div>
     </div>,
     document.body

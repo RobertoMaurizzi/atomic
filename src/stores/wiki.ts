@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../lib/transport';
 
 // Types matching the Rust structs
 export interface WikiArticle {
@@ -101,7 +101,7 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
   fetchAllArticles: async () => {
     set({ isLoadingList: true, error: null });
     try {
-      const articles = await invoke<WikiArticleSummary[]>('get_all_wiki_articles');
+      const articles = await getTransport().invoke<WikiArticleSummary[]>('get_all_wiki_articles');
       set({ articles, isLoadingList: false });
     } catch (error) {
       set({ error: String(error), isLoadingList: false });
@@ -168,7 +168,7 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
   fetchArticle: async (tagId: string) => {
     set({ isLoading: true, error: null });
     try {
-      const article = await invoke<WikiArticleWithCitations | null>('get_wiki_article', { tagId });
+      const article = await getTransport().invoke<WikiArticleWithCitations | null>('get_wiki_article', { tagId });
       set({ currentArticle: article, isLoading: false });
     } catch (error) {
       set({ error: String(error), isLoading: false });
@@ -177,7 +177,7 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
 
   fetchArticleStatus: async (tagId: string) => {
     try {
-      const status = await invoke<WikiArticleStatus>('get_wiki_article_status', { tagId });
+      const status = await getTransport().invoke<WikiArticleStatus>('get_wiki_article_status', { tagId });
       set({ articleStatus: status });
     } catch (error) {
       console.error('Failed to fetch article status:', error);
@@ -187,7 +187,7 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
   generateArticle: async (tagId: string, tagName: string) => {
     set({ isGenerating: true, error: null });
     try {
-      const article = await invoke<WikiArticleWithCitations>('generate_wiki_article', { tagId, tagName });
+      const article = await getTransport().invoke<WikiArticleWithCitations>('generate_wiki_article', { tagId, tagName });
       set({ currentArticle: article, isGenerating: false });
       // Refresh status after generation
       get().fetchArticleStatus(tagId);
@@ -201,7 +201,7 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
   updateArticle: async (tagId: string, tagName: string) => {
     set({ isUpdating: true, error: null });
     try {
-      const article = await invoke<WikiArticleWithCitations>('update_wiki_article', { tagId, tagName });
+      const article = await getTransport().invoke<WikiArticleWithCitations>('update_wiki_article', { tagId, tagName });
       set({ currentArticle: article, isUpdating: false });
       // Refresh status after update
       get().fetchArticleStatus(tagId);
@@ -214,7 +214,7 @@ export const useWikiStore = create<WikiStore>((set, get) => ({
 
   deleteArticle: async (tagId: string) => {
     try {
-      await invoke('delete_wiki_article', { tagId });
+      await getTransport().invoke('delete_wiki_article', { tagId });
       set({ currentArticle: null, articleStatus: null });
       // Refresh the list
       get().fetchAllArticles();

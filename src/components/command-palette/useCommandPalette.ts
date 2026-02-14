@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../../lib/transport';
 import { PaletteMode, SemanticSearchResult, FuzzyMatch, TagWithCount } from './types';
 import { commands } from './commands';
 import { searchCommands } from './fuzzySearch';
@@ -111,7 +111,7 @@ export function useCommandPalette({ isOpen, onClose, initialQuery = '' }: UseCom
 
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        const results = await invoke<SemanticSearchResult[]>('search_atoms_hybrid', {
+        const results = await getTransport().invoke<SemanticSearchResult[]>('search_atoms_hybrid', {
           query: trimmedQuery,
           limit: 10,
           threshold: 0.3,

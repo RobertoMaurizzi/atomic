@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "src-tauri",
     "crates/atomic-core",
+    "crates/atomic-server",
     "crates/mcp-bridge",
     "crates/atomic-mcp",
 ]

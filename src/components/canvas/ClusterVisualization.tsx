@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { AtomCluster } from '../../lib/tauri';
+import { AtomCluster } from '../../lib/api';
 
 interface ClusterVisualizationProps {
   clusters: AtomCluster[];

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../../lib/transport';
 import CodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -46,7 +46,7 @@ export function AtomEditor({ atomId, onClose, onSaved }: AtomEditorProps) {
   useEffect(() => {
     if (isEditing && atomId) {
       setIsLoadingAtom(true);
-      invoke<AtomWithTags | null>('get_atom_by_id', { id: atomId })
+      getTransport().invoke<AtomWithTags | null>('get_atom_by_id', { id: atomId })
         .then((fetchedAtom) => {
           setExistingAtom(fetchedAtom);
           setIsLoadingAtom(false);

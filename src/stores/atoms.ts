@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
+import { getTransport } from '../lib/transport';
 
 export interface Atom {
   id: string;
@@ -96,7 +96,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   fetchAtoms: async () => {
     set({ isLoading: true, error: null });
     try {
-      const atoms = await invoke<AtomWithTags[]>('get_all_atoms');
+      const atoms = await getTransport().invoke<AtomWithTags[]>('get_all_atoms');
       set({ atoms, isLoading: false });
     } catch (error) {
       set({ error: String(error), isLoading: false });
@@ -106,7 +106,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   fetchAtomsByTag: async (tagId: string) => {
     set({ isLoading: true, error: null });
     try {
-      const atoms = await invoke<AtomWithTags[]>('get_atoms_by_tag', { tagId });
+      const atoms = await getTransport().invoke<AtomWithTags[]>('get_atoms_by_tag', { tagId });
       set({ atoms, isLoading: false });
     } catch (error) {
       set({ error: String(error), isLoading: false });
@@ -116,7 +116,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   createAtom: async (content: string, sourceUrl?: string, tagIds?: string[]) => {
     set({ error: null });
     try {
-      const atom = await invoke<AtomWithTags>('create_atom', {
+      const atom = await getTransport().invoke<AtomWithTags>('create_atom', {
         content,
         sourceUrl: sourceUrl || null,
         tagIds: tagIds || [],
@@ -132,7 +132,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   updateAtom: async (id: string, content: string, sourceUrl?: string, tagIds?: string[]) => {
     set({ error: null });
     try {
-      const atom = await invoke<AtomWithTags>('update_atom', {
+      const atom = await getTransport().invoke<AtomWithTags>('update_atom', {
         id,
         content,
         sourceUrl: sourceUrl || null,
@@ -151,7 +151,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   deleteAtom: async (id: string) => {
     set({ error: null });
     try {
-      await invoke('delete_atom', { id });
+      await getTransport().invoke('delete_atom', { id });
       set((state) => ({
         atoms: state.atoms.filter((a) => a.id !== id),
       }));
@@ -188,10 +188,11 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   },
 
   addAtom: (atom: AtomWithTags) => {
-    set((state) => ({
-      // Add to beginning of list (most recent first)
-      atoms: [atom, ...state.atoms],
-    }));
+    set((state) => {
+      // Skip if atom already exists (e.g., same-session create already added it)
+      if (state.atoms.some(a => a.id === atom.id)) return state;
+      return { atoms: [atom, ...state.atoms] };
+    });
   },
   
   search: async (query: string) => {
@@ -202,13 +203,13 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
 
       switch (searchMode) {
         case 'keyword':
-          results = await invoke<SemanticSearchResult[]>('search_atoms_keyword', {
+          results = await getTransport().invoke<SemanticSearchResult[]>('search_atoms_keyword', {
             query,
             limit: 20,
           });
           break;
         case 'semantic':
-          results = await invoke<SemanticSearchResult[]>('search_atoms_semantic', {
+          results = await getTransport().invoke<SemanticSearchResult[]>('search_atoms_semantic', {
             query,
             limit: 20,
             threshold: 0.4,
@@ -216,7 +217,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
           break;
         case 'hybrid':
         default:
-          results = await invoke<SemanticSearchResult[]>('search_atoms_hybrid', {
+          results = await getTransport().invoke<SemanticSearchResult[]>('search_atoms_hybrid', {
             query,
             limit: 20,
             threshold: 0.4,
@@ -248,7 +249,7 @@ export const useAtomsStore = create<AtomsStore>((set, get) => ({
   retryEmbedding: async (atomId: string) => {
     set({ error: null });
     try {
-      await invoke('retry_embedding', { atomId });
+      await getTransport().invoke('retry_embedding', { atomId });
       // Update the atom status to 'pending' optimistically
       set((state) => ({
         atoms: state.atoms.map((a) =>

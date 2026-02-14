@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { getTransport } from '../lib/transport';
 import { useChatStore, ChatMessageWithContext, RetrievalStep } from '../stores/chat';
 
 interface ChatStreamDelta {
@@ -39,53 +39,54 @@ export function useChatEvents(conversationId: string | null) {
   useEffect(() => {
     if (!conversationId) return;
 
-    const unlisteners: Array<() => void> = [];
+    const transport = getTransport();
+    const unsubs: Array<() => void> = [];
 
     // Listen for streaming content
-    listen<ChatStreamDelta>('chat-stream-delta', (event) => {
-      if (event.payload.conversation_id === conversationId) {
-        appendStreamContent(event.payload.content);
+    unsubs.push(transport.subscribe<ChatStreamDelta>('chat-stream-delta', (payload) => {
+      if (payload.conversation_id === conversationId) {
+        appendStreamContent(payload.content);
       }
-    }).then((unlisten) => unlisteners.push(unlisten));
+    }));
 
     // Listen for tool start
-    listen<ChatToolStart>('chat-tool-start', (event) => {
-      if (event.payload.conversation_id === conversationId) {
+    unsubs.push(transport.subscribe<ChatToolStart>('chat-tool-start', (payload) => {
+      if (payload.conversation_id === conversationId) {
         const step: RetrievalStep = {
           step_number: Date.now(), // Temporary, will be replaced
-          tool_name: event.payload.tool_name,
-          query: JSON.stringify(event.payload.tool_input),
+          tool_name: payload.tool_name,
+          query: JSON.stringify(payload.tool_input),
           results_count: 0,
           timestamp: new Date().toISOString(),
         };
         addRetrievalStep(step);
       }
-    }).then((unlisten) => unlisteners.push(unlisten));
+    }));
 
     // Listen for tool complete
-    listen<ChatToolComplete>('chat-tool-complete', (event) => {
-      if (event.payload.conversation_id === conversationId) {
+    unsubs.push(transport.subscribe<ChatToolComplete>('chat-tool-complete', (payload) => {
+      if (payload.conversation_id === conversationId) {
         // Update the last retrieval step with results count
         // For now, this is handled by the store
       }
-    }).then((unlisten) => unlisteners.push(unlisten));
+    }));
 
     // Listen for completion
-    listen<ChatComplete>('chat-complete', (event) => {
-      if (event.payload.conversation_id === conversationId) {
-        completeMessage(event.payload.message);
+    unsubs.push(transport.subscribe<ChatComplete>('chat-complete', (payload) => {
+      if (payload.conversation_id === conversationId) {
+        completeMessage(payload.message);
       }
-    }).then((unlisten) => unlisteners.push(unlisten));
+    }));
 
     // Listen for errors
-    listen<ChatError>('chat-error', (event) => {
-      if (event.payload.conversation_id === conversationId) {
-        setStreamingError(event.payload.error);
+    unsubs.push(transport.subscribe<ChatError>('chat-error', (payload) => {
+      if (payload.conversation_id === conversationId) {
+        setStreamingError(payload.error);
       }
-    }).then((unlisten) => unlisteners.push(unlisten));
+    }));
 
     return () => {
-      unlisteners.forEach((unlisten) => unlisten());
+      unsubs.forEach((unsub) => unsub());
     };
   }, [conversationId, appendStreamContent, addRetrievalStep, completeMessage, setStreamingError]);
 }

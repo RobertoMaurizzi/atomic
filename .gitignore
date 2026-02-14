@@ -3,5 +3,9 @@ src-tauri/binaries/
 target/
 node_modules/
 dist/
+dist-web/
 gen/
 **/.DS_Store
+atomic.db
+atomic.db-journal
+atomic.db-wal

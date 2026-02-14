@@ -28,7 +28,9 @@
 //! )?;
 //! ```
 
+pub mod agent;
 pub mod chunking;
+pub mod chat;
 pub mod clustering;
 pub mod compaction;
 pub mod db;
@@ -40,15 +42,18 @@ pub mod models;
 pub mod providers;
 pub mod search;
 pub mod settings;
+pub mod tokens;
 pub mod wiki;
 
 // Re-exports for convenience
+pub use agent::ChatEvent;
 pub use db::Database;
 pub use embedding::EmbeddingEvent;
 pub use error::AtomicCoreError;
 pub use models::*;
 pub use providers::{ProviderConfig, ProviderType};
 pub use search::{SearchMode, SearchOptions};
+pub use tokens::ApiTokenInfo;
 
 use chrono::Utc;
 use rusqlite::Connection;
@@ -87,6 +92,25 @@ impl AtomicCore {
     /// Open an existing database or create a new one
     pub fn open_or_create(db_path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
         let db = Database::open_or_create(db_path)?;
+
+        // Seed default category tags if tags table is empty
+        {
+            let conn = db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+            let tag_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
+                .unwrap_or(0);
+            if tag_count == 0 {
+                let now = Utc::now().to_rfc3339();
+                for category in &["Topics", "People", "Locations", "Organizations", "Events"] {
+                    let id = Uuid::new_v4().to_string();
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tags (id, name, parent_id, created_at) VALUES (?1, ?2, NULL, ?3)",
+                        rusqlite::params![&id, category, &now],
+                    )?;
+                }
+            }
+        }
+
         Ok(Self { db: Arc::new(db) })
     }
 
@@ -114,6 +138,58 @@ impl AtomicCore {
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), AtomicCoreError> {
         let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         settings::set_setting(&conn, key, value)
+    }
+
+    // ==================== API Token Operations ====================
+
+    /// Create a new named API token. Returns metadata + the raw token (shown once).
+    pub fn create_api_token(
+        &self,
+        name: &str,
+    ) -> Result<(tokens::ApiTokenInfo, String), AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        tokens::create_token(&conn, name)
+    }
+
+    /// List all API tokens (metadata only, never includes raw token values).
+    pub fn list_api_tokens(&self) -> Result<Vec<tokens::ApiTokenInfo>, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        tokens::list_tokens(&conn)
+    }
+
+    /// Verify a raw API token. Returns token info if valid and not revoked.
+    pub fn verify_api_token(
+        &self,
+        raw_token: &str,
+    ) -> Result<Option<tokens::ApiTokenInfo>, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        tokens::verify_token(&conn, raw_token)
+    }
+
+    /// Revoke an API token by ID.
+    pub fn revoke_api_token(&self, id: &str) -> Result<(), AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        tokens::revoke_token(&conn, id)
+    }
+
+    /// Update the last_used_at timestamp for a token.
+    pub fn update_token_last_used(&self, id: &str) -> Result<(), AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        tokens::update_last_used(&conn, id)
+    }
+
+    /// Migrate legacy server_auth_token from settings to api_tokens table.
+    pub fn migrate_legacy_token(&self) -> Result<bool, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        tokens::migrate_legacy_token(&conn)
+    }
+
+    /// Ensure at least one API token exists. Creates a "default" token if none exist.
+    pub fn ensure_default_token(
+        &self,
+    ) -> Result<Option<(tokens::ApiTokenInfo, String)>, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        tokens::ensure_default_token(&conn)
     }
 
     // ==================== Atom Operations ====================
@@ -657,6 +733,103 @@ impl AtomicCore {
             atoms_retagged,
         })
     }
+
+    // ==================== Chat Operations ====================
+
+    /// Create a new conversation
+    pub fn create_conversation(
+        &self,
+        tag_ids: &[String],
+        title: Option<&str>,
+    ) -> Result<ConversationWithTags, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::create_conversation(&conn, tag_ids, title)
+    }
+
+    /// Get all conversations, optionally filtered by tag
+    pub fn get_conversations(
+        &self,
+        filter_tag_id: Option<&str>,
+        limit: i32,
+        offset: i32,
+    ) -> Result<Vec<ConversationWithTags>, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::get_conversations(&conn, filter_tag_id, limit, offset)
+    }
+
+    /// Get a single conversation with all messages
+    pub fn get_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<ConversationWithMessages>, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::get_conversation(&conn, conversation_id)
+    }
+
+    /// Update a conversation (title, archive status)
+    pub fn update_conversation(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        is_archived: Option<bool>,
+    ) -> Result<Conversation, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::update_conversation(&conn, id, title, is_archived)
+    }
+
+    /// Delete a conversation
+    pub fn delete_conversation(&self, id: &str) -> Result<(), AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::delete_conversation(&conn, id)
+    }
+
+    /// Set conversation scope (replace all tags)
+    pub fn set_conversation_scope(
+        &self,
+        conversation_id: &str,
+        tag_ids: &[String],
+    ) -> Result<ConversationWithTags, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::set_conversation_scope(&conn, conversation_id, tag_ids)
+    }
+
+    /// Add a single tag to conversation scope
+    pub fn add_tag_to_scope(
+        &self,
+        conversation_id: &str,
+        tag_id: &str,
+    ) -> Result<ConversationWithTags, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::add_tag_to_scope(&conn, conversation_id, tag_id)
+    }
+
+    /// Remove a single tag from conversation scope
+    pub fn remove_tag_from_scope(
+        &self,
+        conversation_id: &str,
+        tag_id: &str,
+    ) -> Result<ConversationWithTags, AtomicCoreError> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        chat::remove_tag_from_scope(&conn, conversation_id, tag_id)
+    }
+
+    /// Send a chat message and run the agent loop.
+    ///
+    /// The `on_event` callback receives streaming deltas, tool call events,
+    /// and completion/error events during the agent loop.
+    pub async fn send_chat_message<F>(
+        &self,
+        conversation_id: &str,
+        content: &str,
+        on_event: F,
+    ) -> Result<ChatMessageWithContext, AtomicCoreError>
+    where
+        F: Fn(ChatEvent) + Send + Sync,
+    {
+        agent::send_chat_message(Arc::clone(&self.db), conversation_id, content, on_event)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e))
+    }
 }
 
 // ==================== Helper Functions ====================
@@ -775,6 +948,19 @@ mod tests {
         (db, temp_file)
     }
 
+    /// Get a seeded category tag by name (e.g., "Topics")
+    fn get_seeded_tag(db: &AtomicCore, name: &str) -> Tag {
+        let conn = db.db.conn.lock().unwrap();
+        let (id, tag_name, parent_id, created_at) = conn
+            .query_row(
+                "SELECT id, name, parent_id, created_at FROM tags WHERE LOWER(name) = LOWER(?1)",
+                [name],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?)),
+            )
+            .unwrap();
+        Tag { id, name: tag_name, parent_id, created_at }
+    }
+
     /// Test utility: Create a test atom
     fn create_test_atom(db: &AtomicCore, content: &str) -> AtomWithTags {
         db.create_atom(
@@ -861,19 +1047,31 @@ mod tests {
     fn test_create_tag_root() {
         let (db, _temp) = create_test_db();
 
-        let tag = db.create_tag("Topics", None).unwrap();
+        let tag = db.create_tag("CustomRoot", None).unwrap();
 
         assert!(!tag.id.is_empty());
-        assert_eq!(tag.name, "Topics");
+        assert_eq!(tag.name, "CustomRoot");
         assert!(tag.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_seeded_category_tags_exist() {
+        let (db, _temp) = create_test_db();
+        let all_tags = db.get_all_tags().unwrap();
+        let names: Vec<&str> = all_tags.iter().map(|t| t.tag.name.as_str()).collect();
+        assert!(names.contains(&"Topics"));
+        assert!(names.contains(&"People"));
+        assert!(names.contains(&"Locations"));
+        assert!(names.contains(&"Organizations"));
+        assert!(names.contains(&"Events"));
     }
 
     #[test]
     fn test_create_tag_with_parent() {
         let (db, _temp) = create_test_db();
 
-        // Create parent tag
-        let parent = db.create_tag("Topics", None).unwrap();
+        // Use seeded parent tag
+        let parent = get_seeded_tag(&db, "Topics");
 
         // Create child tag
         let child = db.create_tag("AI", Some(&parent.id)).unwrap();
@@ -886,20 +1084,19 @@ mod tests {
     fn test_get_all_tags_hierarchical() {
         let (db, _temp) = create_test_db();
 
-        // Create a hierarchy: Topics -> AI -> Machine Learning
-        let topics = db.create_tag("Topics", None).unwrap();
+        // Use seeded Topics, add hierarchy: Topics -> AI -> Machine Learning
+        let topics = get_seeded_tag(&db, "Topics");
         let ai = db.create_tag("AI", Some(&topics.id)).unwrap();
         let _ml = db.create_tag("Machine Learning", Some(&ai.id)).unwrap();
 
         let all_tags = db.get_all_tags().unwrap();
 
-        // Should have one root tag (Topics) with nested children
-        assert_eq!(all_tags.len(), 1);
-        assert_eq!(all_tags[0].tag.name, "Topics");
-        assert_eq!(all_tags[0].children.len(), 1);
-        assert_eq!(all_tags[0].children[0].tag.name, "AI");
-        assert_eq!(all_tags[0].children[0].children.len(), 1);
-        assert_eq!(all_tags[0].children[0].children[0].tag.name, "Machine Learning");
+        // Should have 6 seeded root tags; find Topics and check its children
+        let topics_node = all_tags.iter().find(|t| t.tag.name == "Topics").unwrap();
+        assert_eq!(topics_node.children.len(), 1);
+        assert_eq!(topics_node.children[0].tag.name, "AI");
+        assert_eq!(topics_node.children[0].children.len(), 1);
+        assert_eq!(topics_node.children[0].children[0].tag.name, "Machine Learning");
     }
 
     #[test]
@@ -954,8 +1151,8 @@ mod tests {
     fn test_get_atoms_by_tag_includes_descendants() {
         let (db, _temp) = create_test_db();
 
-        // Create hierarchy: Topics -> AI
-        let topics = db.create_tag("Topics", None).unwrap();
+        // Use seeded Topics, add child: Topics -> AI
+        let topics = get_seeded_tag(&db, "Topics");
         let ai = db.create_tag("AI", Some(&topics.id)).unwrap();
 
         // Create atom tagged with AI (child)
@@ -981,8 +1178,8 @@ mod tests {
     fn test_atom_tag_counts() {
         let (db, _temp) = create_test_db();
 
-        // Create parent tag
-        let topics = db.create_tag("Topics", None).unwrap();
+        // Use seeded parent tag
+        let topics = get_seeded_tag(&db, "Topics");
 
         // Create 3 atoms with this tag
         for i in 0..3 {
