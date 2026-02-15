@@ -40,8 +40,8 @@ reqwest = { version = "0.12", features = ["json"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # MCP server
-rmcp = { version = "0.10", features = ["server", "macros", "transport-streamable-http-server-session"] }
-rmcp-actix-web = "0.8"
+rmcp = { version = "0.15", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp-actix-web = "0.11"
 schemars = "1.0"
 
 # OAuth / crypto
