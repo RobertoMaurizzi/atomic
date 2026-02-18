@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # Stage 1a: Cargo Chef planner (dependency caching)
 # =============================================================================
@@ -11,12 +12,20 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Stage 1b: Cargo Chef cook + build atomic-server
 # =============================================================================
 FROM rust:1.93-bookworm AS rust-builder
+
+# Install mold linker + cargo-chef
+RUN apt-get update && apt-get install -y --no-install-recommends mold && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef
 WORKDIR /app
 
+# Copy linker config
+COPY .cargo/ .cargo/
+
 # Cook dependencies (cached until Cargo.toml/lock changes)
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json -p atomic-server
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --profile server --recipe-path recipe.json -p atomic-server
 
 # Copy real workspace source
 COPY Cargo.toml Cargo.lock ./
@@ -29,8 +38,11 @@ RUN mkdir -p src-tauri/src && \
     echo "pub fn lib() {}" > src-tauri/src/lib.rs && \
     echo "fn main() { tauri_build::build(); }" > src-tauri/build.rs
 
-# Build atomic-server
-RUN cargo build --release -p atomic-server
+# Build atomic-server with the faster server profile
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --profile server -p atomic-server && \
+    cp /app/target/server/atomic-server /usr/local/bin/atomic-server
 
 # =============================================================================
 # Stage 2: Frontend builder
@@ -62,7 +74,7 @@ RUN apt-get update && \
 RUN useradd --system --create-home --shell /bin/false atomic && \
     mkdir -p /data && chown atomic:atomic /data
 
-COPY --from=rust-builder /app/target/release/atomic-server /usr/local/bin/atomic-server
+COPY --from=rust-builder /usr/local/bin/atomic-server /usr/local/bin/atomic-server
 
 USER atomic
 VOLUME /data

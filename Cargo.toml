@@ -14,3 +14,10 @@ lto = true             # Enable Link Time Optimization
 codegen-units = 1      # Better optimization (slower compile)
 strip = true           # Strip symbols to reduce binary size
 panic = "abort"        # Smaller binary by removing unwinding code
+
+# Faster release builds for Docker/server (skips expensive LTO + single codegen unit)
+[profile.server]
+inherits = "release"
+opt-level = 2          # Standard optimization (not size-focused)
+lto = "thin"           # Much faster than full LTO, still good perf
+codegen-units = 16     # Parallel codegen (default)

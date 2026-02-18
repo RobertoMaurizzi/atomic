@@ -1,0 +1,7 @@
+# Use faster linker for dev builds
+# macOS: uses lld via Xcode's default; for Linux CI/Docker, mold is fastest
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
