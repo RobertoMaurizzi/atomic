@@ -187,7 +187,7 @@ impl AtomicCore {
     pub fn get_settings(
         &self,
     ) -> Result<std::collections::HashMap<String, String>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         settings::get_all_settings(&conn)
     }
 
@@ -210,7 +210,7 @@ impl AtomicCore {
 
     /// List all API tokens (metadata only, never includes raw token values).
     pub fn list_api_tokens(&self) -> Result<Vec<tokens::ApiTokenInfo>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         tokens::list_tokens(&conn)
     }
 
@@ -219,7 +219,7 @@ impl AtomicCore {
         &self,
         raw_token: &str,
     ) -> Result<Option<tokens::ApiTokenInfo>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         tokens::verify_token(&conn, raw_token)
     }
 
@@ -253,7 +253,7 @@ impl AtomicCore {
 
     /// Get all atoms with their tags
     pub fn get_all_atoms(&self) -> Result<Vec<AtomWithTags>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         let mut stmt = conn
             .prepare(
@@ -292,7 +292,7 @@ impl AtomicCore {
 
     /// Get a single atom by ID
     pub fn get_atom(&self, id: &str) -> Result<Option<AtomWithTags>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         let atom_result = conn.query_row(
             "SELECT id, content, source_url, created_at, updated_at,
@@ -537,30 +537,28 @@ impl AtomicCore {
         let conn = self.db.read_conn()?;
         let use_cursor = cursor.is_some() && cursor_id.is_some();
 
-        // Count total
-        let total_count: i32 = if let Some(tid) = tag_id {
-            conn.query_row(
-                "WITH RECURSIVE descendant_tags(id) AS (
-                    SELECT ?1
-                    UNION ALL
-                    SELECT t.id FROM tags t
-                    INNER JOIN descendant_tags dt ON t.parent_id = dt.id
-                )
-                SELECT COUNT(DISTINCT at.atom_id)
-                FROM atom_tags at
-                WHERE at.tag_id IN (SELECT id FROM descendant_tags)",
-                rusqlite::params![tid],
-                |row| row.get(0),
-            )?
-        } else {
-            conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?
-        };
-
-        // Fetch page with SUBSTR to avoid full content transfer.
-        // When a cursor is provided, use keyset pagination for O(limit) performance.
+        // For tag-scoped queries, drive from atom_tags index (sequential scan)
+        // instead of scanning atoms and probing atom_tags per row (random I/O).
+        //
+        // Non-cursor tag queries fold the count into the fetch via COUNT(*) OVER()
+        // to avoid evaluating the recursive CTE twice.
         type AtomRow = (String, String, Option<String>, String, String, String, String);
-        let atoms: Vec<AtomRow> = if let Some(tid) = tag_id {
+        let (total_count, atoms): (i32, Vec<AtomRow>) = if let Some(tid) = tag_id {
             if use_cursor {
+                // Cursor pages: separate count (cursor doesn't affect total)
+                let count: i32 = conn.query_row(
+                    "WITH RECURSIVE descendant_tags(id) AS (
+                        SELECT ?1
+                        UNION ALL
+                        SELECT t.id FROM tags t
+                        INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                    )
+                    SELECT COUNT(DISTINCT at.atom_id)
+                    FROM atom_tags at
+                    WHERE at.tag_id IN (SELECT id FROM descendant_tags)",
+                    rusqlite::params![tid],
+                    |row| row.get(0),
+                )?;
                 let mut stmt = conn.prepare(
                     "WITH RECURSIVE descendant_tags(id) AS (
                         SELECT ?1
@@ -571,13 +569,11 @@ impl AtomicCore {
                     SELECT a.id, SUBSTR(a.content, 1, 250), a.source_url,
                         a.created_at, a.updated_at,
                         COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-                    FROM atoms a
-                    WHERE (a.updated_at, a.id) < (?2, ?3)
-                    AND EXISTS (
-                        SELECT 1 FROM atom_tags at
-                        WHERE at.atom_id = a.id
-                        AND at.tag_id IN (SELECT id FROM descendant_tags)
-                    )
+                    FROM atom_tags at
+                    INNER JOIN atoms a ON a.id = at.atom_id
+                    WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+                    AND (a.updated_at, a.id) < (?2, ?3)
+                    GROUP BY a.id
                     ORDER BY a.updated_at DESC, a.id DESC
                     LIMIT ?4",
                 )?;
@@ -585,8 +581,9 @@ impl AtomicCore {
                     rusqlite::params![tid, cursor.unwrap(), cursor_id.unwrap(), limit],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
                 )?.collect::<Result<Vec<_>, _>>()?;
-                rows
+                (count, rows)
             } else {
+                // First page: single query with COUNT(*) OVER() for total
                 let mut stmt = conn.prepare(
                     "WITH RECURSIVE descendant_tags(id) AS (
                         SELECT ?1
@@ -596,22 +593,27 @@ impl AtomicCore {
                     )
                     SELECT a.id, SUBSTR(a.content, 1, 250), a.source_url,
                         a.created_at, a.updated_at,
-                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
-                    FROM atoms a
-                    WHERE EXISTS (
-                        SELECT 1 FROM atom_tags at
-                        WHERE at.atom_id = a.id
-                        AND at.tag_id IN (SELECT id FROM descendant_tags)
-                    )
+                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending'),
+                        COUNT(*) OVER () as total_count
+                    FROM atom_tags at
+                    INNER JOIN atoms a ON a.id = at.atom_id
+                    WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+                    GROUP BY a.id
                     ORDER BY a.updated_at DESC, a.id DESC
                     LIMIT ?2 OFFSET ?3",
                 )?;
-                let rows = stmt.query_map(rusqlite::params![tid, limit, offset], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
-                })?.collect::<Result<Vec<_>, _>>()?;
-                rows
+                let rows_with_count: Vec<(String, String, Option<String>, String, String, String, String, i32)> =
+                    stmt.query_map(rusqlite::params![tid, limit, offset], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
+                    })?.collect::<Result<Vec<_>, _>>()?;
+                let count = rows_with_count.first().map(|r| r.7).unwrap_or(0);
+                let rows = rows_with_count.into_iter()
+                    .map(|(a, b, c, d, e, f, g, _)| (a, b, c, d, e, f, g))
+                    .collect();
+                (count, rows)
             }
         } else if use_cursor {
+            let count: i32 = conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?;
             let mut stmt = conn.prepare(
                 "SELECT id, SUBSTR(content, 1, 250), source_url,
                  created_at, updated_at,
@@ -624,8 +626,9 @@ impl AtomicCore {
             let rows = stmt.query_map(rusqlite::params![cursor.unwrap(), cursor_id.unwrap(), limit], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
             })?.collect::<Result<Vec<_>, _>>()?;
-            rows
+            (count, rows)
         } else {
+            let count: i32 = conn.query_row("SELECT COUNT(*) FROM atoms", [], |row| row.get(0))?;
             let mut stmt = conn.prepare(
                 "SELECT id, SUBSTR(content, 1, 250), source_url,
                  created_at, updated_at,
@@ -635,7 +638,7 @@ impl AtomicCore {
             let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
             })?.collect::<Result<Vec<_>, _>>()?;
-            rows
+            (count, rows)
         };
 
         // Batch load tags for the page
@@ -899,7 +902,7 @@ impl AtomicCore {
         limit: i32,
         threshold: f32,
     ) -> Result<Vec<SimilarAtomResult>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         search::find_similar_atoms(&conn, atom_id, limit, threshold)
             .map_err(|e| AtomicCoreError::Search(e))
     }
@@ -974,13 +977,13 @@ impl AtomicCore {
 
     /// Get an existing wiki article
     pub fn get_wiki(&self, tag_id: &str) -> Result<Option<WikiArticleWithCitations>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         wiki::load_wiki_article(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
     /// Get wiki article status (for checking if update is needed)
     pub fn get_wiki_status(&self, tag_id: &str) -> Result<WikiArticleStatus, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         wiki::get_article_status(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
@@ -992,13 +995,13 @@ impl AtomicCore {
 
     /// Get tags related to a given tag by semantic connectivity
     pub fn get_related_tags(&self, tag_id: &str, limit: usize) -> Result<Vec<RelatedTag>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         wiki::get_related_tags(&conn, tag_id, limit).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
     /// Get wiki links (outgoing cross-references) for an article
     pub fn get_wiki_links(&self, tag_id: &str) -> Result<Vec<WikiLink>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         wiki::load_wiki_links(&conn, tag_id).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
@@ -1082,7 +1085,7 @@ impl AtomicCore {
         &self,
         min_similarity: f32,
     ) -> Result<std::collections::HashMap<String, i32>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         clustering::get_connection_counts(&conn, min_similarity)
             .map_err(|e| AtomicCoreError::Clustering(e))
     }
@@ -1091,7 +1094,7 @@ impl AtomicCore {
 
     /// Get all tags formatted for LLM analysis
     pub fn get_tags_for_compaction(&self) -> Result<String, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         compaction::read_all_tags(&conn).map_err(|e| AtomicCoreError::Compaction(e))
     }
 
@@ -1132,7 +1135,7 @@ impl AtomicCore {
         limit: i32,
         offset: i32,
     ) -> Result<Vec<ConversationWithTags>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         chat::get_conversations(&conn, filter_tag_id, limit, offset)
     }
 
@@ -1141,7 +1144,7 @@ impl AtomicCore {
         &self,
         conversation_id: &str,
     ) -> Result<Option<ConversationWithMessages>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         chat::get_conversation(&conn, conversation_id)
     }
 
@@ -1214,7 +1217,7 @@ impl AtomicCore {
 
     /// Get all stored atom positions
     pub fn get_atom_positions(&self) -> Result<Vec<AtomPosition>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         let mut stmt = conn.prepare("SELECT atom_id, x, y FROM atom_positions")?;
 
@@ -1250,7 +1253,7 @@ impl AtomicCore {
 
     /// Get atoms with their average embedding vector for similarity calculations
     pub fn get_atoms_with_embeddings(&self) -> Result<Vec<AtomWithEmbedding>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT id, content, source_url, created_at, updated_at,
@@ -1296,7 +1299,7 @@ impl AtomicCore {
 
     /// Get semantic edges above a minimum similarity threshold (capped at 10k for safety)
     pub fn get_semantic_edges(&self, min_similarity: f32) -> Result<Vec<SemanticEdge>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT id, source_atom_id, target_atom_id, similarity_score,
@@ -1331,7 +1334,7 @@ impl AtomicCore {
         depth: i32,
         min_similarity: f32,
     ) -> Result<NeighborhoodGraph, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         build_neighborhood_graph(&conn, atom_id, depth, min_similarity)
     }
 
@@ -1386,7 +1389,7 @@ impl AtomicCore {
         parent_id: Option<&str>,
         children_hint: Option<Vec<String>>,
     ) -> Result<CanvasLevel, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         canvas_level::get_canvas_level(&conn, parent_id, children_hint)
     }
 
@@ -1394,7 +1397,7 @@ impl AtomicCore {
 
     /// Get the embedding status for a specific atom
     pub fn get_embedding_status(&self, atom_id: &str) -> Result<String, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
 
         let status: String = conn.query_row(
             "SELECT COALESCE(embedding_status, 'pending') FROM atoms WHERE id = ?1",
@@ -1562,14 +1565,14 @@ impl AtomicCore {
 
     /// Check sqlite-vec version
     pub fn check_sqlite_vec(&self) -> Result<String, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         let version: String = conn.query_row("SELECT vec_version()", [], |row| row.get(0))?;
         Ok(version)
     }
 
     /// Verify that the current provider is properly configured
     pub fn verify_provider_configured(&self) -> Result<bool, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         let settings_map = settings::get_all_settings(&conn)?;
         let config = ProviderConfig::from_settings(&settings_map);
 
@@ -1583,7 +1586,7 @@ impl AtomicCore {
 
     /// Get all wiki articles (summaries for list view)
     pub fn get_all_wiki_articles(&self) -> Result<Vec<WikiArticleSummary>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         wiki::load_all_wiki_articles(&conn).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
@@ -1822,7 +1825,7 @@ impl AtomicCore {
 
     /// Get suggested wiki articles (tags without articles, ranked by demand)
     pub fn get_suggested_wiki_articles(&self, limit: i32) -> Result<Vec<SuggestedArticle>, AtomicCoreError> {
-        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let conn = self.db.read_conn()?;
         wiki::get_suggested_wiki_articles(&conn, limit).map_err(|e| AtomicCoreError::Wiki(e))
     }
 
