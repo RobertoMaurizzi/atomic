@@ -102,7 +102,7 @@ impl AtomicCore {
     /// Open an existing database with a larger read pool sized for server workloads.
     pub fn open_for_server(db_path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
         let db = Database::open_for_server(db_path)?;
-        Ok(Self { db: Arc::new(db) })
+        Self::seed_and_backfill(db)
     }
 
     /// Run PRAGMA optimize — call on graceful shutdown.
@@ -113,7 +113,11 @@ impl AtomicCore {
     /// Open an existing database or create a new one
     pub fn open_or_create(db_path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
         let db = Database::open_or_create(db_path)?;
+        Self::seed_and_backfill(db)
+    }
 
+    /// Shared initialization: seed default tags and backfill centroids.
+    fn seed_and_backfill(db: Database) -> Result<Self, AtomicCoreError> {
         // Seed default category tags if tags table is empty
         {
             let conn = db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;

@@ -148,8 +148,9 @@ impl Database {
     }
 
     /// Open with a larger read pool sized for server workloads.
+    /// Creates the DB and parent directories if they don't exist.
     pub fn open_for_server(path: impl AsRef<Path>) -> Result<Self, AtomicCoreError> {
-        Self::open_with_pool_size(path.as_ref(), false, SERVER_READ_POOL_SIZE)
+        Self::open_with_pool_size(path.as_ref(), true, SERVER_READ_POOL_SIZE)
     }
 
     /// Walk the hot indexes and table pages into the OS + SQLite page caches.
