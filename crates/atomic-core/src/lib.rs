@@ -1734,7 +1734,9 @@ impl AtomicCore {
         parent_id: Option<&str>,
         children_hint: Option<Vec<String>>,
     ) -> Result<CanvasLevel, AtomicCoreError> {
-        let conn = self.db.read_conn()?;
+        // Uses a fresh connection because canvas_level creates temp tables for batch queries,
+        // which are blocked by PRAGMA query_only=ON on read-pool connections.
+        let conn = self.db.new_connection()?;
         canvas_level::get_canvas_level(&conn, parent_id, children_hint)
     }
 
