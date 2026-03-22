@@ -189,8 +189,8 @@ pub async fn extract_tags_from_content(
                             "description": "Name of the tag to apply"
                         },
                         "parent_name": {
-                            "type": ["string", "null"],
-                            "description": "Name of parent tag, or null for top-level categories"
+                            "type": "string",
+                            "description": "Name of parent tag, or empty string for top-level categories"
                         }
                     },
                     "required": ["name", "parent_name"],
@@ -285,8 +285,8 @@ pub async fn extract_tags_from_chunk(
                             "description": "Name of the tag to apply"
                         },
                         "parent_name": {
-                            "type": ["string", "null"],
-                            "description": "Name of parent tag, or null for top-level categories"
+                            "type": "string",
+                            "description": "Name of parent tag, or empty string for top-level categories"
                         }
                     },
                     "required": ["name", "parent_name"],
@@ -651,8 +651,8 @@ pub async fn consolidate_atom_tags(
                             "description": "Name of the tag to add"
                         },
                         "parent_name": {
-                            "type": ["string", "null"],
-                            "description": "Name of parent tag, or null for top-level categories"
+                            "type": "string",
+                            "description": "Name of parent tag, or empty string for top-level categories"
                         }
                     },
                     "required": ["name", "parent_name"],
