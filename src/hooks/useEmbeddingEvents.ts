@@ -73,6 +73,10 @@ export function useEmbeddingEvents() {
     // Listen for tagging-complete events (slower, has tag info)
     // Debounce these: accumulate and do a single refetch after events settle
     const unsubTaggingComplete = transport.subscribe<TaggingCompletePayload>('tagging-complete', (payload) => {
+      if (payload.status === 'failed') {
+        console.error(`Tagging failed for atom ${payload.atom_id}:`, payload.error);
+      }
+
       // If new tags were created, we need to refresh the tag tree
       if (payload.new_tags_created && payload.new_tags_created.length > 0) {
         needsTagRefresh.current = true;

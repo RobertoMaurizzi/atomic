@@ -170,8 +170,9 @@ impl From<atomic_core::EmbeddingEvent> for ServerEvent {
                 tags_extracted,
                 new_tags_created,
             },
-            atomic_core::EmbeddingEvent::TaggingFailed { atom_id, error } => {
-                ServerEvent::TaggingFailed { atom_id, error }
+            atomic_core::EmbeddingEvent::TaggingFailed { atom_id, ref error } => {
+                eprintln!("Tagging failed for atom {}: {}", atom_id, error);
+                ServerEvent::TaggingFailed { atom_id, error: error.clone() }
             }
             atomic_core::EmbeddingEvent::TaggingSkipped { atom_id } => {
                 ServerEvent::TaggingSkipped { atom_id }
