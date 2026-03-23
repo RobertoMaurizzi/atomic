@@ -152,12 +152,12 @@ fn convert_tool(tool: &ToolDefinition) -> ApiTool {
     }
 }
 
-fn convert_tool_call(tc: &ResponseToolCall, index: usize) -> ToolCall {
+fn convert_tool_call(tc: &ResponseToolCall, _index: usize) -> ToolCall {
     // Ollama returns arguments as parsed JSON, we need to stringify it
     let arguments = serde_json::to_string(&tc.function.arguments).unwrap_or_default();
 
     ToolCall {
-        id: format!("call_{}", index),
+        id: format!("call_{}", uuid::Uuid::new_v4()),
         call_type: Some("function".to_string()),
         function: Some(ToolCallFunction {
             name: tc.function.name.clone(),
