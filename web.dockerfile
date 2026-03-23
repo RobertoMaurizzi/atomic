@@ -2,7 +2,7 @@
 # =============================================================================
 # Stage 1: Frontend builder
 # =============================================================================
-FROM node:24-bookworm-slim AS frontend-builder
+FROM node:22-bookworm-slim AS frontend-builder
 WORKDIR /app
 
 # Install dependencies (cached layer)
