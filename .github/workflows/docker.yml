@@ -14,11 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: server
+          - dockerfile: server.dockerfile
             image: atomic-server
-          - target: web
+          - dockerfile: web.dockerfile
             image: atomic-web
-          - target: all-in-one
+          - dockerfile: Dockerfile
+            target: all-in-one
             image: atomic
 
     runs-on: ubuntu-latest
@@ -55,7 +56,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: ${{ matrix.target }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target || '' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

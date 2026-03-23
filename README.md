@@ -1,5 +1,7 @@
 # Atomic
 
+[![Docker Image Version](https://img.shields.io/github/v/tag/kenforthewin/atomic?label=docker&logo=docker)](https://github.com/kenforthewin/atomic/pkgs/container/atomic-server)
+
 A personal knowledge base that turns markdown notes into a semantically-connected, AI-augmented knowledge graph.
 
 Atomic stores knowledge as **atoms** — markdown notes that are automatically chunked, embedded, tagged, and linked by semantic similarity. Your atoms can be synthesized into wiki articles, explored on a spatial canvas, and queried through an agentic chat interface.
@@ -43,7 +45,9 @@ cd atomic
 docker compose up -d
 ```
 
-This starts the API server and web frontend. Open `http://localhost` and claim your instance through the setup wizard.
+This starts three services: the API server, the web frontend, and an nginx reverse proxy. Open `http://localhost:8080` and claim your instance through the setup wizard.
+
+The proxy service is provided for convenience — if you already run your own reverse proxy (Caddy, Traefik, etc.), you can skip it and route traffic to the `server` and `web` containers directly. See `docker/nginx.conf` for an example configuration.
 
 ### Deploy to Fly.io
 
@@ -110,24 +114,29 @@ The endpoint runs at `/mcp` on your server (e.g., `http://localhost:8080/mcp`).
 
 ## Architecture
 
-All business logic lives in `atomic-core`, a standalone Rust crate with no framework dependencies. Every client is a thin wrapper adapting it to a transport:
+All business logic lives in `atomic-core`, a standalone Rust crate with no framework dependencies. `atomic-server` wraps it with a REST API, WebSocket events, and an embedded MCP endpoint. Every client connects to `atomic-server` over HTTP:
 
 ```
                     +------------------+
                     |   atomic-core    |
                     |   (all logic)    |
                     +--------+---------+
+                             |
+                    +--------v---------+
+                    |  atomic-server   |
+                    | (REST + WS + MCP)|
+                    +--------+---------+
               +--------------+--------------+
               v              v              v
-    +-----------+    +--------------+    +----------+
-    | src-tauri |    |atomic-server |    |atomic-mcp|
-    | (desktop) |    | (REST + WS)  |    |  (stdio) |
-    +-----+-----+    +------+-------+    +----------+
-          |                 |
-    +-----v-----+    +------v-------+
-    |  React UI  |    | HTTP clients |
-    |            |    | (iOS, web)   |
-    +------------+    +--------------+
+    +-----------+    +------------+    +----------+
+    | src-tauri |    |  React UI  |    | iOS app  |
+    | (sidecar) |    |  (browser) |    | (SwiftUI)|
+    +-----+-----+    +------------+    +----------+
+          |
+    +-----v-----+
+    |  React UI  |
+    | (desktop)  |
+    +------------+
 ```
 
 ## Project Structure
@@ -136,9 +145,8 @@ All business logic lives in `atomic-core`, a standalone Rust crate with no frame
 Cargo.toml                  # Workspace root
 crates/atomic-core/         # All business logic
 crates/atomic-server/       # REST + WebSocket + MCP server
-crates/atomic-mcp/          # Standalone MCP server (stdio)
 crates/mcp-bridge/          # HTTP-to-stdio MCP bridge
-src-tauri/                  # Tauri desktop app
+src-tauri/                  # Tauri desktop app (launches server as sidecar)
 src/                        # React frontend (TypeScript)
 ios/                        # Native iOS app (SwiftUI)
 extension/                  # Chromium browser extension
