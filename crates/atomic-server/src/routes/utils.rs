@@ -5,16 +5,7 @@ use actix_web::HttpResponse;
 
 #[utoipa::path(get, path = "/api/utils/sqlite-vec", responses((status = 200, description = "sqlite-vec version")), tag = "utils")]
 pub async fn check_sqlite_vec(db: Db) -> HttpResponse {
-    let database = db.0.database();
-    let conn = match database.conn.lock() {
-        Ok(c) => c,
-        Err(e) => {
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()}));
-        }
-    };
-
-    match conn.query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0)) {
+    match db.0.check_sqlite_vec() {
         Ok(version) => HttpResponse::Ok().json(serde_json::json!({"version": version})),
         Err(e) => HttpResponse::InternalServerError()
             .json(serde_json::json!({"error": format!("sqlite-vec not loaded: {}", e)})),
@@ -23,10 +14,10 @@ pub async fn check_sqlite_vec(db: Db) -> HttpResponse {
 
 #[utoipa::path(post, path = "/api/utils/compact-tags", responses((status = 200, description = "Tag compaction results")), tag = "utils")]
 pub async fn compact_tags(db: Db) -> HttpResponse {
-    let database = db.0.database();
+    let core = &db.0;
 
     let (provider_config, model) = {
-        let settings_map = match db.0.get_settings() {
+        let settings_map = match core.get_settings() {
             Ok(s) => s,
             Err(e) => {
                 return HttpResponse::InternalServerError()
@@ -47,32 +38,22 @@ pub async fn compact_tags(db: Db) -> HttpResponse {
 
     let supported_params: Option<Vec<String>> =
         if provider_config.provider_type == atomic_core::ProviderType::OpenRouter {
-            use atomic_core::providers::models::{
-                fetch_and_return_capabilities, get_cached_capabilities_sync, save_capabilities_cache,
-            };
+            use atomic_core::providers::models::fetch_and_return_capabilities;
 
-            let (cached, is_stale) = {
-                let conn = match database.conn.lock() {
-                    Ok(c) => c,
-                    Err(_) => return HttpResponse::InternalServerError().finish(),
-                };
-                match get_cached_capabilities_sync(&conn) {
-                    Ok(Some(cache)) => {
-                        let stale = cache.is_stale();
-                        (Some(cache), stale)
-                    }
-                    Ok(None) => (None, true),
-                    Err(_) => (None, true),
+            let (cached, is_stale) = match core.get_cached_capabilities() {
+                Ok(Some(cache)) => {
+                    let stale = cache.is_stale();
+                    (Some(cache), stale)
                 }
+                Ok(None) => (None, true),
+                Err(_) => (None, true),
             };
 
             let capabilities = if is_stale {
                 let client = reqwest::Client::new();
                 match fetch_and_return_capabilities(&client).await {
                     Ok(fresh) => {
-                        if let Ok(conn) = database.new_connection() {
-                            let _ = save_capabilities_cache(&conn, &fresh);
-                        }
+                        let _ = core.save_capabilities_cache(&fresh);
                         fresh
                     }
                     Err(_) => cached.unwrap_or_default(),
@@ -86,20 +67,11 @@ pub async fn compact_tags(db: Db) -> HttpResponse {
             None
         };
 
-    let all_tags = {
-        let conn = match database.conn.lock() {
-            Ok(c) => c,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": e.to_string()}));
-            }
-        };
-        match atomic_core::compaction::read_all_tags(&conn) {
-            Ok(t) => t,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": e}));
-            }
+    let all_tags = match core.get_tags_for_compaction() {
+        Ok(t) => t,
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": e.to_string()}));
         }
     };
 
@@ -119,23 +91,17 @@ pub async fn compact_tags(db: Db) -> HttpResponse {
     .await
     {
         Ok(merge_suggestions) => {
-            let conn = match database.conn.lock() {
-                Ok(c) => c,
+            let result = match core.apply_tag_merges(&merge_suggestions.merges) {
+                Ok(r) => r,
                 Err(e) => {
                     return HttpResponse::InternalServerError()
                         .json(serde_json::json!({"error": e.to_string()}));
                 }
             };
-            let (merged, retagged, errors) =
-                atomic_core::compaction::apply_merge_operations(&conn, &merge_suggestions.merges);
-
-            for err in &errors {
-                eprintln!("Merge error: {}", err);
-            }
 
             HttpResponse::Ok().json(serde_json::json!({
-                "tags_merged": merged,
-                "atoms_retagged": retagged
+                "tags_merged": result.tags_merged,
+                "atoms_retagged": result.atoms_retagged
             }))
         }
         Err(e) => HttpResponse::InternalServerError()

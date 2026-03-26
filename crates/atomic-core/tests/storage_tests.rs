@@ -1,0 +1,385 @@
+//! Parameterized storage tests that run against both SQLite and Postgres backends.
+//!
+//! SQLite tests always run. Postgres tests require:
+//!   - The `postgres` feature enabled
+//!   - `ATOMIC_TEST_DATABASE_URL` env var set to a Postgres connection string
+//!
+//! Usage:
+//!   cargo test -p atomic-core --test storage_tests                         # SQLite only
+//!   cargo test -p atomic-core --test storage_tests --features postgres     # Both
+
+use atomic_core::storage::SqliteStorage;
+use atomic_core::storage::traits::*;
+use atomic_core::{CreateAtomRequest, UpdateAtomRequest, ListAtomsParams};
+use atomic_core::models::*;
+use atomic_core::db::Database;
+use std::sync::Arc;
+use tempfile::TempDir;
+
+// ==================== Test Helpers ====================
+
+async fn sqlite_storage() -> (SqliteStorage, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let db = Database::open_or_create(dir.path().join("test.db")).unwrap();
+    let storage = SqliteStorage::new(Arc::new(db));
+    (storage, dir)
+}
+
+#[cfg(feature = "postgres")]
+async fn postgres_storage() -> Option<atomic_core::storage::PostgresStorage> {
+    let url = match std::env::var("ATOMIC_TEST_DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => return None, // Skip Postgres tests when env var not set
+    };
+    let storage = atomic_core::storage::PostgresStorage::connect(&url).await.unwrap();
+    storage.initialize().await.unwrap();
+    Some(storage)
+}
+
+// ==================== AtomStore Tests ====================
+
+async fn test_create_and_get_atom(storage: &dyn AtomStore) {
+    let request = CreateAtomRequest {
+        content: "# Test Atom\n\nThis is a test.".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: vec![],
+    };
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let created = storage.insert_atom(&id, &request, &now).await.unwrap();
+
+    assert_eq!(created.atom.id, id);
+    assert_eq!(created.atom.content, "# Test Atom\n\nThis is a test.");
+    assert_eq!(created.atom.embedding_status, "pending");
+
+    // Retrieve it
+    let fetched = storage.get_atom(&id).await.unwrap();
+    assert!(fetched.is_some());
+    let fetched = fetched.unwrap();
+    assert_eq!(fetched.atom.id, id);
+    assert_eq!(fetched.atom.content, created.atom.content);
+}
+
+async fn test_get_atom_not_found(storage: &dyn AtomStore) {
+    let result = storage.get_atom("nonexistent-id").await.unwrap();
+    assert!(result.is_none());
+}
+
+async fn test_delete_atom(storage: &dyn AtomStore) {
+    let request = CreateAtomRequest {
+        content: "To be deleted".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: vec![],
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    storage.insert_atom(&id, &request, &now).await.unwrap();
+
+    storage.delete_atom(&id).await.unwrap();
+    let result = storage.get_atom(&id).await.unwrap();
+    assert!(result.is_none());
+}
+
+async fn test_update_atom(storage: &dyn AtomStore) {
+    let request = CreateAtomRequest {
+        content: "Original content".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: vec![],
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    storage.insert_atom(&id, &request, &now).await.unwrap();
+
+    let update = UpdateAtomRequest {
+        content: "Updated content".to_string(),
+        source_url: None,
+        published_at: None,
+        tag_ids: None,
+    };
+    let updated = storage.update_atom(&id, &update, &now).await.unwrap();
+    assert_eq!(updated.atom.content, "Updated content");
+
+    let fetched = storage.get_atom(&id).await.unwrap().unwrap();
+    assert_eq!(fetched.atom.content, "Updated content");
+}
+
+async fn test_get_all_atoms(storage: &dyn AtomStore) {
+    let now = chrono::Utc::now().to_rfc3339();
+    for i in 0..3 {
+        let request = CreateAtomRequest {
+            content: format!("Atom {}", i),
+            source_url: None,
+            published_at: None,
+            tag_ids: vec![],
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        storage.insert_atom(&id, &request, &now).await.unwrap();
+    }
+
+    let all = storage.get_all_atoms().await.unwrap();
+    assert!(all.len() >= 3);
+}
+
+async fn test_list_atoms_pagination(storage: &dyn AtomStore) {
+    let now = chrono::Utc::now().to_rfc3339();
+    for i in 0..5 {
+        let request = CreateAtomRequest {
+            content: format!("Paginated atom {}", i),
+            source_url: None,
+            published_at: None,
+            tag_ids: vec![],
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        storage.insert_atom(&id, &request, &now).await.unwrap();
+    }
+
+    let params = ListAtomsParams {
+        tag_id: None,
+        limit: 2,
+        offset: 0,
+        cursor: None,
+        cursor_id: None,
+        source_filter: SourceFilter::All,
+        source_value: None,
+        sort_by: SortField::Updated,
+        sort_order: SortOrder::Desc,
+    };
+
+    let page = storage.list_atoms(&params).await.unwrap();
+    assert_eq!(page.atoms.len(), 2);
+    assert!(page.total_count >= 5);
+}
+
+// ==================== TagStore Tests ====================
+
+async fn test_create_and_get_tags(storage: &dyn TagStore) {
+    let tag = storage.create_tag("Test Tag", None).await.unwrap();
+    assert_eq!(tag.name, "Test Tag");
+    assert!(tag.parent_id.is_none());
+
+    let child = storage.create_tag("Child Tag", Some(&tag.id)).await.unwrap();
+    assert_eq!(child.parent_id.as_deref(), Some(tag.id.as_str()));
+
+    // get_all_tags returns a tree — flatten to count
+    let all_tags = storage.get_all_tags().await.unwrap();
+    fn count_tree(tags: &[TagWithCount]) -> usize {
+        tags.iter().map(|t| 1 + count_tree(&t.children)).sum()
+    }
+    assert!(count_tree(&all_tags) >= 2);
+}
+
+async fn test_update_tag(storage: &dyn TagStore) {
+    let tag = storage.create_tag("Old Name", None).await.unwrap();
+    let updated = storage.update_tag(&tag.id, "New Name", None).await.unwrap();
+    assert_eq!(updated.name, "New Name");
+}
+
+async fn test_delete_tag(storage: &dyn TagStore) {
+    let tag = storage.create_tag("Doomed", None).await.unwrap();
+    storage.delete_tag(&tag.id, false).await.unwrap();
+
+    // Tag should be gone from get_all_tags
+    let tags = storage.get_all_tags().await.unwrap();
+    assert!(!tags.iter().any(|t| t.tag.id == tag.id));
+}
+
+// ==================== ChatStore Tests ====================
+
+async fn test_create_conversation(storage: &dyn ChatStore) {
+    let conv = storage.create_conversation(&[], None).await.unwrap();
+    assert!(!conv.conversation.id.is_empty());
+
+    let fetched = storage.get_conversation(&conv.conversation.id).await.unwrap();
+    assert!(fetched.is_some());
+}
+
+async fn test_save_and_get_messages(storage: &dyn ChatStore) {
+    let conv = storage.create_conversation(&[], Some("Test Chat")).await.unwrap();
+
+    let msg = storage.save_message(&conv.conversation.id, "user", "Hello!").await.unwrap();
+    assert_eq!(msg.role, "user");
+    assert_eq!(msg.content, "Hello!");
+
+    let full = storage.get_conversation(&conv.conversation.id).await.unwrap().unwrap();
+    assert_eq!(full.messages.len(), 1);
+}
+
+async fn test_delete_conversation(storage: &dyn ChatStore) {
+    let conv = storage.create_conversation(&[], None).await.unwrap();
+    storage.delete_conversation(&conv.conversation.id).await.unwrap();
+
+    let fetched = storage.get_conversation(&conv.conversation.id).await.unwrap();
+    assert!(fetched.is_none());
+}
+
+// ==================== WikiStore Tests ====================
+
+async fn test_save_and_get_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiStore) {
+    // Wiki articles reference tags via FK, so create a tag first
+    let tag = tag_store.create_tag("Wiki Test Tag", None).await.unwrap();
+    let article = wiki_store
+        .save_wiki(&tag.id, "# Wiki Article\n\nContent here.", &[], 5)
+        .await
+        .unwrap();
+    assert_eq!(article.article.tag_id, tag.id);
+
+    let fetched = wiki_store.get_wiki(&tag.id).await.unwrap();
+    assert!(fetched.is_some());
+    assert_eq!(fetched.unwrap().article.content, "# Wiki Article\n\nContent here.");
+}
+
+async fn test_delete_wiki(tag_store: &dyn TagStore, wiki_store: &dyn WikiStore) {
+    let tag = tag_store.create_tag("Wiki Delete Tag", None).await.unwrap();
+    wiki_store.save_wiki(&tag.id, "temp", &[], 1).await.unwrap();
+    wiki_store.delete_wiki(&tag.id).await.unwrap();
+
+    let fetched = wiki_store.get_wiki(&tag.id).await.unwrap();
+    assert!(fetched.is_none());
+}
+
+// ==================== ChunkStore Tests ====================
+
+// Embedding status tests need both AtomStore and ChunkStore together,
+// which is tested through AtomicCore integration tests.
+
+// ==================== SQLite Test Runners ====================
+
+#[tokio::test]
+async fn sqlite_create_and_get_atom() {
+    let (s, _dir) = sqlite_storage().await;
+    test_create_and_get_atom(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_get_atom_not_found() {
+    let (s, _dir) = sqlite_storage().await;
+    test_get_atom_not_found(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_delete_atom() {
+    let (s, _dir) = sqlite_storage().await;
+    test_delete_atom(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_update_atom() {
+    let (s, _dir) = sqlite_storage().await;
+    test_update_atom(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_get_all_atoms() {
+    let (s, _dir) = sqlite_storage().await;
+    test_get_all_atoms(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_list_atoms_pagination() {
+    let (s, _dir) = sqlite_storage().await;
+    test_list_atoms_pagination(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_create_and_get_tags() {
+    let (s, _dir) = sqlite_storage().await;
+    test_create_and_get_tags(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_update_tag() {
+    let (s, _dir) = sqlite_storage().await;
+    test_update_tag(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_delete_tag() {
+    let (s, _dir) = sqlite_storage().await;
+    test_delete_tag(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_create_conversation() {
+    let (s, _dir) = sqlite_storage().await;
+    test_create_conversation(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_save_and_get_messages() {
+    let (s, _dir) = sqlite_storage().await;
+    test_save_and_get_messages(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_delete_conversation() {
+    let (s, _dir) = sqlite_storage().await;
+    test_delete_conversation(&s).await;
+}
+
+#[tokio::test]
+async fn sqlite_save_and_get_wiki() {
+    let (s, _dir) = sqlite_storage().await;
+    test_save_and_get_wiki(&s, &s).await;
+}
+
+#[tokio::test]
+async fn sqlite_delete_wiki() {
+    let (s, _dir) = sqlite_storage().await;
+    test_delete_wiki(&s, &s).await;
+}
+
+// ==================== Postgres Test Runners ====================
+
+#[cfg(feature = "postgres")]
+mod postgres_tests {
+    use super::*;
+
+    /// Helper macro: skip test if ATOMIC_TEST_DATABASE_URL is not set
+    macro_rules! pg_test {
+        ($name:ident, $body:expr) => {
+            #[tokio::test]
+            async fn $name() {
+                let Some(s) = postgres_storage().await else {
+                    eprintln!("Skipping {} (ATOMIC_TEST_DATABASE_URL not set)", stringify!($name));
+                    return;
+                };
+                $body(&s).await;
+            }
+        };
+    }
+
+    pg_test!(pg_create_and_get_atom, test_create_and_get_atom);
+    pg_test!(pg_get_atom_not_found, test_get_atom_not_found);
+    pg_test!(pg_delete_atom, test_delete_atom);
+    pg_test!(pg_update_atom, test_update_atom);
+    pg_test!(pg_get_all_atoms, test_get_all_atoms);
+    pg_test!(pg_list_atoms_pagination, test_list_atoms_pagination);
+    pg_test!(pg_create_and_get_tags, test_create_and_get_tags);
+    pg_test!(pg_update_tag, test_update_tag);
+    pg_test!(pg_delete_tag, test_delete_tag);
+    pg_test!(pg_create_conversation, test_create_conversation);
+    pg_test!(pg_save_and_get_messages, test_save_and_get_messages);
+    pg_test!(pg_delete_conversation, test_delete_conversation);
+
+    #[tokio::test]
+    async fn pg_save_and_get_wiki() {
+        let Some(s) = postgres_storage().await else {
+            eprintln!("Skipping (ATOMIC_TEST_DATABASE_URL not set)");
+            return;
+        };
+        test_save_and_get_wiki(&s, &s).await;
+    }
+
+    #[tokio::test]
+    async fn pg_delete_wiki() {
+        let Some(s) = postgres_storage().await else {
+            eprintln!("Skipping (ATOMIC_TEST_DATABASE_URL not set)");
+            return;
+        };
+        test_delete_wiki(&s, &s).await;
+    }
+}

@@ -8,18 +8,10 @@ use utoipa::{IntoParams, ToSchema};
 
 #[utoipa::path(get, path = "/api/wiki", responses((status = 200, description = "All wiki articles", body = Vec<atomic_core::WikiArticleSummary>)), tag = "wiki")]
 pub async fn get_all_wiki_articles(db: Db) -> HttpResponse {
-    let database = db.0.database();
-    let conn = match database.conn.lock() {
-        Ok(c) => c,
-        Err(e) => {
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()}));
-        }
-    };
-    match atomic_core::wiki::load_all_wiki_articles(&conn) {
+    match db.0.get_all_wiki_articles() {
         Ok(articles) => HttpResponse::Ok().json(articles),
         Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e})),
+            .json(serde_json::json!({"error": e.to_string()})),
     }
 }
 

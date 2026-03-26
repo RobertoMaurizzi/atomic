@@ -32,8 +32,8 @@ async fn main() {
     }
 
     // Open database
-    let db = match db::open_database(&db_path) {
-        Ok(db) => db,
+    let core = match db::open_database(&db_path) {
+        Ok(core) => core,
         Err(e) => {
             eprintln!("Error opening database: {}", e);
             std::process::exit(1);
@@ -43,7 +43,7 @@ async fn main() {
     eprintln!("Database opened successfully");
 
     // Create MCP server
-    let server = server::AtomicMcpServer::new(db);
+    let server = server::AtomicMcpServer::new(core);
 
     // Run with stdio transport
     eprintln!("Starting MCP server on stdio...");

@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core library
-atomic-core = { path = "../atomic-core", features = ["openapi"] }
+atomic-core = { path = "../atomic-core", features = ["openapi", "postgres"] }
 
 # Web framework
 actix-web = "4.9"
@@ -39,9 +39,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # HTTP client (for OpenRouter proxy calls)
 reqwest = { version = "0.12", features = ["json"] }
-
-# Database (needed for direct SQL in some routes)
-rusqlite = { version = "0.32", features = ["bundled"] }
 
 # MCP server
 rmcp = { version = "0.15", features = ["server", "macros", "transport-streamable-http-server"] }

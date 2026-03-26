@@ -96,9 +96,6 @@ pub async fn register(
         }));
     }
 
-    let id = uuid::Uuid::new_v4().to_string();
-    let client_id = uuid::Uuid::new_v4().to_string();
-
     // Generate client_secret: 32 random bytes, base64url-encoded
     let mut secret_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret_bytes);
@@ -108,10 +105,13 @@ pub async fn register(
     let secret_hash = hex::encode(Sha256::digest(client_secret.as_bytes()));
 
     let redirect_uris_json = serde_json::to_string(&req.redirect_uris).unwrap_or_default();
-    let now = chrono::Utc::now().to_rfc3339();
 
-    let conn = match state.manager.registry().new_connection() {
-        Ok(c) => c,
+    let client_id = match state.manager.registry().create_oauth_client(
+        &req.client_name,
+        &secret_hash,
+        &redirect_uris_json,
+    ) {
+        Ok(id) => id,
         Err(e) => {
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "server_error",
@@ -119,17 +119,6 @@ pub async fn register(
             }))
         }
     };
-
-    if let Err(e) = conn.execute(
-        "INSERT INTO oauth_clients (id, client_id, client_secret_hash, client_name, redirect_uris, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, client_id, secret_hash, req.client_name, redirect_uris_json, now],
-    ) {
-        return HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "server_error",
-            "error_description": e.to_string()
-        }));
-    }
 
     HttpResponse::Created().json(RegisterResponse {
         client_id,
@@ -174,18 +163,10 @@ pub async fn authorize_page(
     }
 
     // Look up client
-    let conn = match state.manager.registry().new_connection() {
-        Ok(c) => c,
+    let client_name: String = match state.manager.registry().get_oauth_client_name(&q.client_id) {
+        Ok(Some(name)) => name,
+        Ok(None) => return redirect_with_error(&q.redirect_uri, "invalid_request", q.state.as_deref()),
         Err(_) => return HttpResponse::InternalServerError().body("Database error"),
-    };
-
-    let client_name: String = match conn.query_row(
-        "SELECT client_name FROM oauth_clients WHERE client_id = ?1",
-        [&q.client_id],
-        |row| row.get(0),
-    ) {
-        Ok(name) => name,
-        Err(_) => return redirect_with_error(&q.redirect_uri, "invalid_request", q.state.as_deref()),
     };
 
     // Serve the HTML consent page
@@ -234,18 +215,10 @@ pub async fn authorize_approve(
     }
 
     // Verify client_id exists and redirect_uri matches
-    let conn = match state.manager.registry().new_connection() {
-        Ok(c) => c,
+    let redirect_uris_json: String = match state.manager.registry().get_oauth_client_redirect_uris(&f.client_id) {
+        Ok(Some(uris)) => uris,
+        Ok(None) => return redirect_with_error(&f.redirect_uri, "invalid_request", f.state.as_deref()),
         Err(_) => return HttpResponse::InternalServerError().body("Database error"),
-    };
-
-    let redirect_uris_json: String = match conn.query_row(
-        "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
-        [&f.client_id],
-        |row| row.get(0),
-    ) {
-        Ok(uris) => uris,
-        Err(_) => return redirect_with_error(&f.redirect_uri, "invalid_request", f.state.as_deref()),
     };
 
     let registered_uris: Vec<String> = serde_json::from_str(&redirect_uris_json).unwrap_or_default();
@@ -262,18 +235,14 @@ pub async fn authorize_approve(
     let now = chrono::Utc::now();
     let expires_at = now + chrono::Duration::minutes(5);
 
-    if let Err(e) = conn.execute(
-        "INSERT INTO oauth_codes (code_hash, client_id, code_challenge, code_challenge_method, redirect_uri, created_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![
-            code_hash,
-            f.client_id,
-            f.code_challenge,
-            f.code_challenge_method,
-            f.redirect_uri,
-            now.to_rfc3339(),
-            expires_at.to_rfc3339(),
-        ],
+    if let Err(e) = state.manager.registry().store_oauth_code(
+        &code_hash,
+        &f.client_id,
+        &f.code_challenge,
+        &f.code_challenge_method,
+        &f.redirect_uri,
+        &now.to_rfc3339(),
+        &expires_at.to_rfc3339(),
     ) {
         return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "server_error",
@@ -350,22 +319,14 @@ pub async fn token(
         })),
     };
 
-    let conn = match state.manager.registry().new_connection() {
-        Ok(c) => c,
+    // Verify client_id + client_secret
+    let stored_hash: String = match state.manager.registry().get_oauth_client_secret_hash(client_id) {
+        Ok(Some(h)) => h,
+        Ok(None) => return HttpResponse::Unauthorized().json(serde_json::json!({
+            "error": "invalid_client"
+        })),
         Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "server_error"
-        })),
-    };
-
-    // Verify client_id + client_secret
-    let stored_hash: String = match conn.query_row(
-        "SELECT client_secret_hash FROM oauth_clients WHERE client_id = ?1",
-        [client_id],
-        |row| row.get(0),
-    ) {
-        Ok(h) => h,
-        Err(_) => return HttpResponse::Unauthorized().json(serde_json::json!({
-            "error": "invalid_client"
         })),
     };
 
@@ -379,21 +340,22 @@ pub async fn token(
     // Look up authorization code
     let code_hash = hex::encode(Sha256::digest(code.as_bytes()));
 
-    let code_row: Result<(String, String, String, i32), _> = conn.query_row(
-        "SELECT client_id, code_challenge, expires_at, used FROM oauth_codes WHERE code_hash = ?1",
-        [&code_hash],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    );
-
-    let (stored_client_id, code_challenge, expires_at_str, used) = match code_row {
-        Ok(row) => row,
-        Err(_) => return HttpResponse::BadRequest().json(serde_json::json!({
+    let code_info = match state.manager.registry().lookup_oauth_code(&code_hash) {
+        Ok(Some(info)) => info,
+        Ok(None) => return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "invalid_grant",
             "error_description": "invalid authorization code"
         })),
+        Err(_) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "server_error"
+        })),
     };
 
-    if used != 0 {
+    let stored_client_id = code_info.client_id;
+    let code_challenge = code_info.code_challenge;
+    let expires_at_str = code_info.expires_at;
+
+    if code_info.used {
         return HttpResponse::BadRequest().json(serde_json::json!({
             "error": "invalid_grant",
             "error_description": "authorization code already used"
@@ -426,20 +388,12 @@ pub async fn token(
         }));
     }
 
-    // Mark code as used
-    let _ = conn.execute(
-        "UPDATE oauth_codes SET used = 1 WHERE code_hash = ?1",
-        [&code_hash],
-    );
-
     // Look up client name for the token label
-    let client_name: String = conn
-        .query_row(
-            "SELECT client_name FROM oauth_clients WHERE client_id = ?1",
-            [client_id],
-            |row| row.get(0),
-        )
-        .unwrap_or_else(|_| "OAuth Client".to_string());
+    let client_name: String = state.manager.registry()
+        .get_oauth_client_name(client_id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "OAuth Client".to_string());
 
     // Create a new Atomic API token
     let (token_info, raw_token) = match state.manager.registry().create_api_token(&format!("OAuth: {}", client_name)) {
@@ -450,11 +404,8 @@ pub async fn token(
         })),
     };
 
-    // Store token_id on the code row for auditing
-    let _ = conn.execute(
-        "UPDATE oauth_codes SET token_id = ?1 WHERE code_hash = ?2",
-        rusqlite::params![token_info.id, code_hash],
-    );
+    // Mark code as used and store token_id for auditing
+    let _ = state.manager.registry().mark_oauth_code_used(&code_hash, Some(&token_info.id));
 
     HttpResponse::Ok().json(serde_json::json!({
         "access_token": raw_token,
@@ -803,24 +754,12 @@ mod tests {
 
     /// Helper: register a client and return (client_id, client_secret)
     fn register_test_client(state: &web::Data<AppState>) -> (String, String) {
-        let conn = state.manager.registry().new_connection().unwrap();
-        let client_id = uuid::Uuid::new_v4().to_string();
         let client_secret = "test-secret-value";
         let secret_hash = hex::encode(Sha256::digest(client_secret.as_bytes()));
         let redirect_uris = serde_json::to_string(&vec!["http://localhost:3000/callback"]).unwrap();
-        conn.execute(
-            "INSERT INTO oauth_clients (id, client_id, client_secret_hash, client_name, redirect_uris, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![
-                uuid::Uuid::new_v4().to_string(),
-                client_id,
-                secret_hash,
-                "Test Client",
-                redirect_uris,
-                chrono::Utc::now().to_rfc3339()
-            ],
-        )
-        .unwrap();
+        let client_id = state.manager.registry()
+            .create_oauth_client("Test Client", &secret_hash, &redirect_uris)
+            .unwrap();
         (client_id, client_secret.to_string())
     }
 

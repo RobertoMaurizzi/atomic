@@ -81,60 +81,51 @@ impl AtomicMcpServer {
         let limit = params.limit.unwrap_or(100).min(500) as usize;
         let offset = params.offset.unwrap_or(0).max(0) as usize;
 
-        let db = self.core.database();
-        let conn = db
-            .new_connection()
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
-        let atom_result: Result<(String, String, String, String), rusqlite::Error> = conn
-            .query_row(
-                "SELECT id, content, created_at, updated_at FROM atoms WHERE id = ?1",
-                [&params.atom_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            );
-
-        match atom_result {
-            Ok((id, content, created_at, updated_at)) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let total_lines = lines.len() as i32;
-                let start = offset.min(lines.len());
-                let end = (start + limit).min(lines.len());
-                let paginated_lines = &lines[start..end];
-                let returned_lines = paginated_lines.len() as i32;
-                let has_more = end < lines.len();
-
-                let mut paginated_content = paginated_lines.join("\n");
-
-                if has_more {
-                    paginated_content.push_str(&format!(
-                        "\n\n(Atom content continues. Use offset {} to read more lines.)",
-                        end
-                    ));
-                }
-
-                let response = AtomContent {
-                    atom_id: id,
-                    content: paginated_content,
-                    total_lines,
-                    returned_lines,
-                    offset: offset as i32,
-                    has_more,
-                    created_at,
-                    updated_at,
-                };
-
-                let response_text = serde_json::to_string_pretty(&response)
-                    .map_err(|e| {
-                        ErrorData::internal_error(format!("Serialization error: {}", e), None)
-                    })?;
-
-                Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        let atom_with_tags = match self.core.get_atom(&params.atom_id) {
+            Ok(Some(a)) => a,
+            Ok(None) => {
+                return Ok(CallToolResult::success(vec![
+                    Content::text(format!("Atom not found: {}", params.atom_id)),
+                ]));
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(CallToolResult::success(vec![
-                Content::text(format!("Atom not found: {}", params.atom_id)),
-            ])),
-            Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
+            Err(e) => return Err(ErrorData::internal_error(e.to_string(), None)),
+        };
+
+        let content = &atom_with_tags.atom.content;
+        let lines: Vec<&str> = content.lines().collect();
+        let total_lines = lines.len() as i32;
+        let start = offset.min(lines.len());
+        let end = (start + limit).min(lines.len());
+        let paginated_lines = &lines[start..end];
+        let returned_lines = paginated_lines.len() as i32;
+        let has_more = end < lines.len();
+
+        let mut paginated_content = paginated_lines.join("\n");
+
+        if has_more {
+            paginated_content.push_str(&format!(
+                "\n\n(Atom content continues. Use offset {} to read more lines.)",
+                end
+            ));
         }
+
+        let response = AtomContent {
+            atom_id: atom_with_tags.atom.id,
+            content: paginated_content,
+            total_lines,
+            returned_lines,
+            offset: offset as i32,
+            has_more,
+            created_at: atom_with_tags.atom.created_at,
+            updated_at: atom_with_tags.atom.updated_at,
+        };
+
+        let response_text = serde_json::to_string_pretty(&response)
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Serialization error: {}", e), None)
+            })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
 
     /// Create a new atom with markdown content

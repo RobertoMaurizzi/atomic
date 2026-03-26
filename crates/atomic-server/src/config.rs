@@ -56,6 +56,15 @@ pub enum Command {
         /// Can also be set via PUBLIC_URL env var.
         #[arg(long, env = "PUBLIC_URL")]
         public_url: Option<String>,
+
+        /// Storage backend: "sqlite" (default) or "postgres"
+        #[arg(long, default_value = "sqlite", env = "ATOMIC_STORAGE")]
+        storage: String,
+
+        /// Postgres connection string (required when --storage=postgres).
+        /// Example: postgres://user:pass@localhost:5432/atomic
+        #[arg(long, env = "ATOMIC_DATABASE_URL")]
+        database_url: Option<String>,
     },
 
     /// Manage API tokens

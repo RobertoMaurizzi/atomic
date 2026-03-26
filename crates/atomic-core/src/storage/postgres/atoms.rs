@@ -1,0 +1,835 @@
+use super::PostgresStorage;
+use crate::error::AtomicCoreError;
+use crate::models::*;
+use crate::storage::traits::*;
+use crate::{extract_title_and_snippet, parse_source, CreateAtomRequest, ListAtomsParams, UpdateAtomRequest};
+use async_trait::async_trait;
+
+/// Helper to map a sqlx Row into an Atom.
+macro_rules! db_err {
+    ($e:expr) => {
+        $e.map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))
+    };
+}
+
+impl PostgresStorage {
+    /// Fetch tags for a single atom.
+    async fn tags_for_atom(&self, atom_id: &str) -> StorageResult<Vec<Tag>> {
+        let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT t.id, t.name, t.parent_id, t.created_at
+             FROM tags t
+             JOIN atom_tags at ON t.id = at.tag_id
+             WHERE at.atom_id = $1
+             ORDER BY t.name",
+        )
+        .bind(atom_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, parent_id, created_at)| Tag {
+                id,
+                name,
+                parent_id,
+                created_at,
+            })
+            .collect())
+    }
+
+    /// Batch-fetch tags for a set of atom IDs. Returns a map of atom_id -> Vec<Tag>.
+    async fn tags_for_atom_ids(
+        &self,
+        atom_ids: &[String],
+    ) -> StorageResult<std::collections::HashMap<String, Vec<Tag>>> {
+        use std::collections::HashMap;
+
+        if atom_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Build dynamic placeholders $1, $2, ...
+        let placeholders: Vec<String> = (1..=atom_ids.len()).map(|i| format!("${}", i)).collect();
+        let sql = format!(
+            "SELECT at.atom_id, t.id, t.name, t.parent_id, t.created_at
+             FROM atom_tags at
+             JOIN tags t ON t.id = at.tag_id
+             WHERE at.atom_id IN ({})
+             ORDER BY t.name",
+            placeholders.join(", ")
+        );
+
+        let mut query = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(&sql);
+        for id in atom_ids {
+            query = query.bind(id);
+        }
+
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
+        for (atom_id, tag_id, name, parent_id, created_at) in rows {
+            map.entry(atom_id).or_default().push(Tag {
+                id: tag_id,
+                name,
+                parent_id,
+                created_at,
+            });
+        }
+
+        Ok(map)
+    }
+
+    /// Build an Atom from a full row tuple.
+    fn atom_from_tuple(
+        row: (
+            String,         // id
+            String,         // content
+            String,         // title
+            String,         // snippet
+            Option<String>, // source_url
+            Option<String>, // source
+            Option<String>, // published_at
+            String,         // created_at
+            String,         // updated_at
+            String,         // embedding_status
+            String,         // tagging_status
+        ),
+    ) -> Atom {
+        Atom {
+            id: row.0,
+            content: row.1,
+            title: row.2,
+            snippet: row.3,
+            source_url: row.4,
+            source: row.5,
+            published_at: row.6,
+            created_at: row.7,
+            updated_at: row.8,
+            embedding_status: row.9,
+            tagging_status: row.10,
+        }
+    }
+}
+
+#[async_trait]
+impl AtomStore for PostgresStorage {
+    async fn get_all_atoms(&self) -> StorageResult<Vec<AtomWithTags>> {
+        let rows: Vec<(
+            String, String, String, String,
+            Option<String>, Option<String>, Option<String>,
+            String, String, String, String,
+        )> = sqlx::query_as(
+            "SELECT id, content, title, snippet, source_url, source, published_at,
+                    created_at, updated_at,
+                    COALESCE(embedding_status, 'pending'),
+                    COALESCE(tagging_status, 'pending')
+             FROM atoms ORDER BY updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let atom_ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+        let tag_map = self.tags_for_atom_ids(&atom_ids).await?;
+
+        let result = rows
+            .into_iter()
+            .map(|row| {
+                let id = row.0.clone();
+                let atom = Self::atom_from_tuple(row);
+                let tags = tag_map.get(&id).cloned().unwrap_or_default();
+                AtomWithTags { atom, tags }
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    async fn get_atom(&self, id: &str) -> StorageResult<Option<AtomWithTags>> {
+        let row: Option<(
+            String, String, String, String,
+            Option<String>, Option<String>, Option<String>,
+            String, String, String, String,
+        )> = sqlx::query_as(
+            "SELECT id, content, title, snippet, source_url, source, published_at,
+                    created_at, updated_at,
+                    COALESCE(embedding_status, 'pending'),
+                    COALESCE(tagging_status, 'pending')
+             FROM atoms WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        match row {
+            Some(r) => {
+                let atom = Self::atom_from_tuple(r);
+                let tags = self.tags_for_atom(id).await?;
+                Ok(Some(AtomWithTags { atom, tags }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn insert_atom(
+        &self,
+        id: &str,
+        request: &CreateAtomRequest,
+        created_at: &str,
+    ) -> StorageResult<AtomWithTags> {
+        let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+        let source = request.source_url.as_deref().map(parse_source);
+        let embedding_status = "pending";
+        let tagging_status = "pending";
+
+        db_err!(
+            sqlx::query(
+                "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, tagging_status, title, snippet)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            )
+            .bind(id)
+            .bind(&request.content)
+            .bind(&request.source_url)
+            .bind(&source)
+            .bind(&request.published_at)
+            .bind(created_at)
+            .bind(created_at)
+            .bind(embedding_status)
+            .bind(tagging_status)
+            .bind(&title)
+            .bind(&snippet)
+            .execute(&self.pool)
+            .await
+        )?;
+
+        for tag_id in &request.tag_ids {
+            db_err!(
+                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id) VALUES ($1, $2)")
+                    .bind(id)
+                    .bind(tag_id)
+                    .execute(&self.pool)
+                    .await
+            )?;
+        }
+
+        let tags = self.tags_for_atom(id).await?;
+
+        let atom = Atom {
+            id: id.to_string(),
+            content: request.content.clone(),
+            title,
+            snippet,
+            source_url: request.source_url.clone(),
+            source,
+            published_at: request.published_at.clone(),
+            created_at: created_at.to_string(),
+            updated_at: created_at.to_string(),
+            embedding_status: embedding_status.to_string(),
+            tagging_status: tagging_status.to_string(),
+        };
+
+        Ok(AtomWithTags { atom, tags })
+    }
+
+    async fn insert_atoms_bulk(
+        &self,
+        atoms: &[(String, CreateAtomRequest, String)],
+    ) -> StorageResult<Vec<AtomWithTags>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let mut atoms_with_tags: Vec<AtomWithTags> = Vec::with_capacity(atoms.len());
+
+        for (id, request, created_at) in atoms {
+            let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+            let source = request.source_url.as_deref().map(parse_source);
+
+            sqlx::query(
+                "INSERT INTO atoms (id, content, source_url, source, published_at, created_at, updated_at, embedding_status, tagging_status, title, snippet)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            )
+            .bind(id)
+            .bind(&request.content)
+            .bind(&request.source_url)
+            .bind(&source)
+            .bind(&request.published_at)
+            .bind(created_at)
+            .bind(created_at)
+            .bind("pending")
+            .bind("pending")
+            .bind(&title)
+            .bind(&snippet)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+            for tag_id in &request.tag_ids {
+                sqlx::query("INSERT INTO atom_tags (atom_id, tag_id) VALUES ($1, $2)")
+                    .bind(id)
+                    .bind(tag_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            }
+
+            let atom = Atom {
+                id: id.clone(),
+                content: request.content.clone(),
+                title,
+                snippet,
+                source_url: request.source_url.clone(),
+                source,
+                published_at: request.published_at.clone(),
+                created_at: created_at.clone(),
+                updated_at: created_at.clone(),
+                embedding_status: "pending".to_string(),
+                tagging_status: "pending".to_string(),
+            };
+
+            atoms_with_tags.push(AtomWithTags {
+                atom,
+                tags: vec![],
+            });
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        // Resolve tags after commit
+        for awt in &mut atoms_with_tags {
+            awt.tags = self.tags_for_atom(&awt.atom.id).await?;
+        }
+
+        Ok(atoms_with_tags)
+    }
+
+    async fn update_atom(
+        &self,
+        id: &str,
+        request: &UpdateAtomRequest,
+        updated_at: &str,
+    ) -> StorageResult<AtomWithTags> {
+        let (title, snippet) = extract_title_and_snippet(&request.content, 300);
+        let source = request.source_url.as_deref().map(parse_source);
+        let embedding_status = "pending";
+
+        db_err!(
+            sqlx::query(
+                "UPDATE atoms SET content = $1, source_url = $2, source = $3, published_at = $4,
+                 updated_at = $5, embedding_status = $6, title = $7, snippet = $8
+                 WHERE id = $9"
+            )
+            .bind(&request.content)
+            .bind(&request.source_url)
+            .bind(&source)
+            .bind(&request.published_at)
+            .bind(updated_at)
+            .bind(embedding_status)
+            .bind(&title)
+            .bind(&snippet)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+        )?;
+
+        // Replace tags if provided
+        if let Some(ref tag_ids) = request.tag_ids {
+            db_err!(
+                sqlx::query("DELETE FROM atom_tags WHERE atom_id = $1")
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await
+            )?;
+
+            for tag_id in tag_ids {
+                db_err!(
+                    sqlx::query("INSERT INTO atom_tags (atom_id, tag_id) VALUES ($1, $2)")
+                        .bind(id)
+                        .bind(tag_id)
+                        .execute(&self.pool)
+                        .await
+                )?;
+            }
+        }
+
+        // Re-fetch the atom
+        let row: (
+            String, String, String, String,
+            Option<String>, Option<String>, Option<String>,
+            String, String, String, String,
+        ) = sqlx::query_as(
+            "SELECT id, content, title, snippet, source_url, source, published_at,
+                    created_at, updated_at,
+                    COALESCE(embedding_status, 'pending'),
+                    COALESCE(tagging_status, 'pending')
+             FROM atoms WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let atom = Self::atom_from_tuple(row);
+        let tags = self.tags_for_atom(id).await?;
+
+        Ok(AtomWithTags { atom, tags })
+    }
+
+    async fn delete_atom(&self, id: &str) -> StorageResult<()> {
+        // Explicit delete from atom_tags so triggers (if any) fire.
+        db_err!(
+            sqlx::query("DELETE FROM atom_tags WHERE atom_id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+        )?;
+        db_err!(
+            sqlx::query("DELETE FROM atoms WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+        )?;
+        Ok(())
+    }
+
+    async fn get_atoms_by_tag(&self, tag_id: &str) -> StorageResult<Vec<AtomWithTags>> {
+        let rows: Vec<(
+            String, String, String, String,
+            Option<String>, Option<String>, Option<String>,
+            String, String, String, String,
+        )> = sqlx::query_as(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT $1::text
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+            )
+            SELECT a.id, a.content, a.title, a.snippet, a.source_url, a.source, a.published_at,
+                   a.created_at, a.updated_at,
+                   COALESCE(a.embedding_status, 'pending'),
+                   COALESCE(a.tagging_status, 'pending')
+            FROM atom_tags at
+            INNER JOIN atoms a ON a.id = at.atom_id
+            WHERE at.tag_id IN (SELECT id FROM descendant_tags)
+            GROUP BY a.id, a.content, a.title, a.snippet, a.source_url, a.source,
+                     a.published_at, a.created_at, a.updated_at,
+                     a.embedding_status, a.tagging_status
+            ORDER BY a.updated_at DESC",
+        )
+        .bind(tag_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let atom_ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+        let tag_map = self.tags_for_atom_ids(&atom_ids).await?;
+
+        let result = rows
+            .into_iter()
+            .map(|row| {
+                let id = row.0.clone();
+                let atom = Self::atom_from_tuple(row);
+                let tags = tag_map.get(&id).cloned().unwrap_or_default();
+                AtomWithTags { atom, tags }
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    async fn list_atoms(&self, params: &ListAtomsParams) -> StorageResult<PaginatedAtoms> {
+        let use_cursor = params.cursor.is_some() && params.cursor_id.is_some();
+
+        let has_extra_filters = !matches!(params.source_filter, SourceFilter::All)
+            || params.source_value.is_some();
+
+        // --- Build ORDER BY ---
+        let sort_col = match params.sort_by {
+            SortField::Updated => "a.updated_at",
+            SortField::Created => "a.created_at",
+            SortField::Published => "COALESCE(a.published_at, a.created_at)",
+            SortField::Title => "a.title",
+        };
+        let sort_dir = match params.sort_order {
+            SortOrder::Desc => "DESC",
+            SortOrder::Asc => "ASC",
+        };
+        let cursor_cmp = match params.sort_order {
+            SortOrder::Desc => "<",
+            SortOrder::Asc => ">",
+        };
+
+        // --- Dynamic WHERE + bind values ---
+        // We collect bind values as trait objects to apply them dynamically.
+        // Since sqlx doesn't support dynamic binding easily, we build the query string
+        // with numbered placeholders and use a helper approach.
+
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut param_idx: usize = 1;
+
+        // We'll track the actual values to bind in order.
+        // Using an enum to hold different types.
+        enum BindVal {
+            Str(String),
+            Int(i32),
+        }
+        let mut bind_values: Vec<BindVal> = Vec::new();
+
+        // Tag filter
+        if let Some(ref tid) = params.tag_id {
+            where_clauses.push(format!(
+                "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ${p} OR parent_id = ${p}))",
+                p = param_idx
+            ));
+            bind_values.push(BindVal::Str(tid.clone()));
+            param_idx += 1;
+        }
+
+        // Source filter
+        match params.source_filter {
+            SourceFilter::All => {}
+            SourceFilter::Manual => {
+                where_clauses.push("a.source IS NULL".to_string());
+            }
+            SourceFilter::External => {
+                where_clauses.push("a.source IS NOT NULL".to_string());
+            }
+        }
+
+        // Source value filter
+        if let Some(ref sv) = params.source_value {
+            where_clauses.push(format!("a.source = ${}", param_idx));
+            bind_values.push(BindVal::Str(sv.clone()));
+            param_idx += 1;
+        }
+
+        // Cursor
+        if use_cursor {
+            where_clauses.push(format!(
+                "({sort_col}, a.id) {cursor_cmp} (${p1}, ${p2})",
+                sort_col = sort_col,
+                cursor_cmp = cursor_cmp,
+                p1 = param_idx,
+                p2 = param_idx + 1,
+            ));
+            bind_values.push(BindVal::Str(params.cursor.clone().unwrap()));
+            bind_values.push(BindVal::Str(params.cursor_id.clone().unwrap()));
+            param_idx += 2;
+        }
+
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // --- Count query ---
+        let total_count: i32 = if !has_extra_filters && params.tag_id.is_some() {
+            let tid = params.tag_id.as_ref().unwrap();
+            let has_children: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM tags WHERE parent_id = $1)",
+            )
+            .bind(tid)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+            if has_children {
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(DISTINCT at.atom_id)
+                     FROM atom_tags at
+                     WHERE at.tag_id IN (SELECT id FROM tags WHERE id = $1 OR parent_id = $1)",
+                )
+                .bind(tid)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+                count as i32
+            } else {
+                let count: i32 = sqlx::query_scalar(
+                    "SELECT atom_count FROM tags WHERE id = $1",
+                )
+                .bind(tid)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+                count
+            }
+        } else if has_extra_filters || params.tag_id.is_some() {
+            // Build count query with filters (no cursor)
+            let mut count_wheres: Vec<String> = Vec::new();
+            let mut count_binds: Vec<BindVal> = Vec::new();
+            let mut ci: usize = 1;
+
+            if let Some(ref tid) = params.tag_id {
+                count_wheres.push(format!(
+                    "EXISTS (SELECT 1 FROM atom_tags at WHERE at.atom_id = a.id AND at.tag_id IN (SELECT id FROM tags WHERE id = ${p} OR parent_id = ${p}))",
+                    p = ci
+                ));
+                count_binds.push(BindVal::Str(tid.clone()));
+                ci += 1;
+            }
+            match params.source_filter {
+                SourceFilter::All => {}
+                SourceFilter::Manual => count_wheres.push("a.source IS NULL".to_string()),
+                SourceFilter::External => count_wheres.push("a.source IS NOT NULL".to_string()),
+            }
+            if let Some(ref sv) = params.source_value {
+                count_wheres.push(format!("a.source = ${}", ci));
+                count_binds.push(BindVal::Str(sv.clone()));
+                // ci += 1;
+            }
+
+            let count_where = if count_wheres.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", count_wheres.join(" AND "))
+            };
+            let count_sql = format!("SELECT COUNT(*) FROM atoms a {}", count_where);
+
+            let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
+            for bv in &count_binds {
+                match bv {
+                    BindVal::Str(s) => query = query.bind(s),
+                    BindVal::Int(i) => query = query.bind(i),
+                }
+            }
+            let count = query
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            count as i32
+        } else {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM atoms")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+            count as i32
+        };
+
+        // --- Data query ---
+        let limit_param = param_idx;
+        bind_values.push(BindVal::Int(params.limit));
+        param_idx += 1;
+
+        let data_sql = if use_cursor {
+            format!(
+                "SELECT a.id, a.title, a.snippet, a.source_url, a.source, a.published_at,
+                        a.created_at, a.updated_at,
+                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
+                 FROM atoms a
+                 {where_sql}
+                 ORDER BY {sort_col} {sort_dir}, a.id {sort_dir}
+                 LIMIT ${limit_param}",
+            )
+        } else {
+            let offset_param = param_idx;
+            bind_values.push(BindVal::Int(params.offset));
+            // param_idx += 1;
+            format!(
+                "SELECT a.id, a.title, a.snippet, a.source_url, a.source, a.published_at,
+                        a.created_at, a.updated_at,
+                        COALESCE(a.embedding_status, 'pending'), COALESCE(a.tagging_status, 'pending')
+                 FROM atoms a
+                 {where_sql}
+                 ORDER BY {sort_col} {sort_dir}, a.id {sort_dir}
+                 LIMIT ${limit_param} OFFSET ${offset_param}",
+            )
+        };
+
+        let mut query = sqlx::query_as::<_, (
+            String, String, String,
+            Option<String>, Option<String>, Option<String>,
+            String, String, String, String,
+        )>(&data_sql);
+        for bv in &bind_values {
+            match bv {
+                BindVal::Str(s) => query = query.bind(s),
+                BindVal::Int(i) => query = query.bind(i),
+            }
+        }
+
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        // Batch-load tags
+        let atom_ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+        let tag_map = self.tags_for_atom_ids(&atom_ids).await?;
+
+        // Extract cursor from last result
+        let (next_cursor, next_cursor_id) = rows
+            .last()
+            .map(|last| (Some(last.7.clone()), Some(last.0.clone())))
+            .unwrap_or((None, None));
+
+        let summaries: Vec<AtomSummary> = rows
+            .into_iter()
+            .map(
+                |(id, title, snippet, source_url, source, published_at, created_at, updated_at, embedding_status, tagging_status)| {
+                    let tags = tag_map.get(&id).cloned().unwrap_or_default();
+                    AtomSummary {
+                        id,
+                        title,
+                        snippet,
+                        source_url,
+                        source,
+                        published_at,
+                        created_at,
+                        updated_at,
+                        embedding_status,
+                        tagging_status,
+                        tags,
+                    }
+                },
+            )
+            .collect();
+
+        Ok(PaginatedAtoms {
+            atoms: summaries,
+            total_count,
+            limit: params.limit,
+            offset: params.offset,
+            next_cursor,
+            next_cursor_id,
+        })
+    }
+
+    async fn get_source_list(&self) -> StorageResult<Vec<SourceInfo>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT source, COUNT(*) as cnt FROM atoms WHERE source IS NOT NULL GROUP BY source ORDER BY cnt DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(source, count)| SourceInfo {
+                source,
+                atom_count: count as i32,
+            })
+            .collect())
+    }
+
+    async fn get_embedding_status(&self, atom_id: &str) -> StorageResult<String> {
+        let status: String = sqlx::query_scalar(
+            "SELECT COALESCE(embedding_status, 'pending') FROM atoms WHERE id = $1",
+        )
+        .bind(atom_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(status)
+    }
+
+    async fn get_atom_positions(&self) -> StorageResult<Vec<AtomPosition>> {
+        let rows: Vec<(String, f64, f64)> =
+            sqlx::query_as("SELECT atom_id, x, y FROM atom_positions")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(atom_id, x, y)| AtomPosition { atom_id, x, y })
+            .collect())
+    }
+
+    async fn save_atom_positions(&self, positions: &[AtomPosition]) -> StorageResult<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        for pos in positions {
+            sqlx::query(
+                "INSERT INTO atom_positions (atom_id, x, y, updated_at) VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (atom_id) DO UPDATE SET x = $2, y = $3, updated_at = $4",
+            )
+            .bind(&pos.atom_id)
+            .bind(&pos.x)
+            .bind(&pos.y)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_atoms_with_embeddings(&self) -> StorageResult<Vec<AtomWithEmbedding>> {
+        // Fetch all atoms
+        let rows: Vec<(
+            String, String, String, String,
+            Option<String>, Option<String>, Option<String>,
+            String, String, String, String,
+        )> = sqlx::query_as(
+            "SELECT id, content, title, snippet, source_url, source, published_at,
+                    created_at, updated_at,
+                    COALESCE(embedding_status, 'pending'),
+                    COALESCE(tagging_status, 'pending')
+             FROM atoms ORDER BY updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        let atom_ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+        let tag_map = self.tags_for_atom_ids(&atom_ids).await?;
+
+        // Batch-load average embeddings for all atoms.
+        // In Postgres with pgvector, embeddings are stored as vector type.
+        // We average chunk embeddings per atom.
+        let embedding_rows: Vec<(String, Vec<f32>)> = sqlx::query_as(
+            "SELECT ac.atom_id, avg(vc.embedding)::real[] as avg_embedding
+             FROM atom_chunks ac
+             JOIN vec_chunks vc ON vc.chunk_id = ac.id
+             GROUP BY ac.atom_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        let mut embedding_map: std::collections::HashMap<String, Vec<f32>> =
+            std::collections::HashMap::new();
+        for (atom_id, emb) in embedding_rows {
+            embedding_map.insert(atom_id, emb);
+        }
+
+        let result = rows
+            .into_iter()
+            .map(|row| {
+                let id = row.0.clone();
+                let atom = Self::atom_from_tuple(row);
+                let tags = tag_map.get(&id).cloned().unwrap_or_default();
+                let embedding = embedding_map.get(&id).cloned();
+                AtomWithEmbedding {
+                    atom: AtomWithTags { atom, tags },
+                    embedding,
+                }
+            })
+            .collect();
+
+        Ok(result)
+    }
+}

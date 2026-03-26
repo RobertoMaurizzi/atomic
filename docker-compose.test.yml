@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: atomic_test
+      POSTGRES_USER: atomic
+      POSTGRES_PASSWORD: atomic_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atomic"]
+      interval: 2s
+      timeout: 5s
+      retries: 5

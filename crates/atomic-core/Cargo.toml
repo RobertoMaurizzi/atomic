@@ -6,9 +6,13 @@ description = "Core RAG library for Atomic knowledge base"
 license = "MIT"
 
 [dependencies]
-# Database
+# Database — SQLite (always available)
 rusqlite = { version = "0.32", features = ["bundled", "load_extension"] }
 sqlite-vec = "0.1.6"
+
+# Database — Postgres (feature-gated)
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"], optional = true }
+pgvector = { version = "0.4", features = ["sqlx"], optional = true }
 
 # Async
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
@@ -52,6 +56,10 @@ url = "2"
 [features]
 default = []
 openapi = ["utoipa"]
+postgres = ["sqlx", "pgvector"]
 
 [dev-dependencies]
 tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

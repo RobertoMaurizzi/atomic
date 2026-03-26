@@ -16,20 +16,12 @@ atomic-core = { path = "../atomic-core" }
 rmcp = { version = "0.11", features = ["server", "macros", "transport-io"] }
 schemars = "1.0"
 
-# Database (still needed for direct access in some cases)
-rusqlite = { version = "0.32", features = ["bundled", "load_extension"] }
-sqlite-vec = "0.1.6"
-
 # Async
 tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync"] }
-async-trait = "0.1"
-futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Utilities
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"

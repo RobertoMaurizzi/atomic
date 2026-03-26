@@ -25,6 +25,15 @@ pub struct DatabaseInfo {
     pub last_opened_at: Option<String>,
 }
 
+/// Information about an OAuth authorization code.
+#[derive(Debug, Clone)]
+pub struct OAuthCodeInfo {
+    pub client_id: String,
+    pub code_challenge: String,
+    pub expires_at: String,
+    pub used: bool,
+}
+
 /// The registry manages shared configuration and database metadata.
 /// Lives at `<data_dir>/registry.db`.
 pub struct Registry {
@@ -492,14 +501,121 @@ impl Registry {
 
     // ==================== OAuth (shared across databases) ====================
 
-    /// Get the underlying connection for OAuth operations.
-    /// OAuth modules use raw Connection access since they have their own complex queries.
-    pub fn with_conn<F, T>(&self, f: F) -> Result<T, AtomicCoreError>
-    where
-        F: FnOnce(&Connection) -> Result<T, AtomicCoreError>,
-    {
+    /// Register a new OAuth client. Returns the generated client_id.
+    pub fn create_oauth_client(
+        &self,
+        client_name: &str,
+        client_secret_hash: &str,
+        redirect_uris_json: &str,
+    ) -> Result<String, AtomicCoreError> {
         let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
-        f(&conn)
+        let id = Uuid::new_v4().to_string();
+        let client_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO oauth_clients (id, client_id, client_secret_hash, client_name, redirect_uris, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, client_id, client_secret_hash, client_name, redirect_uris_json, now],
+        )?;
+        Ok(client_id)
+    }
+
+    /// Get the client_name for an OAuth client by client_id.
+    pub fn get_oauth_client_name(&self, client_id: &str) -> Result<Option<String>, AtomicCoreError> {
+        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        match conn.query_row(
+            "SELECT client_name FROM oauth_clients WHERE client_id = ?1",
+            [client_id],
+            |row| row.get(0),
+        ) {
+            Ok(name) => Ok(Some(name)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(AtomicCoreError::Database(e)),
+        }
+    }
+
+    /// Get the redirect_uris JSON for an OAuth client by client_id.
+    pub fn get_oauth_client_redirect_uris(&self, client_id: &str) -> Result<Option<String>, AtomicCoreError> {
+        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        match conn.query_row(
+            "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
+            [client_id],
+            |row| row.get(0),
+        ) {
+            Ok(uris) => Ok(Some(uris)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(AtomicCoreError::Database(e)),
+        }
+    }
+
+    /// Get the client_secret_hash for an OAuth client by client_id.
+    pub fn get_oauth_client_secret_hash(&self, client_id: &str) -> Result<Option<String>, AtomicCoreError> {
+        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        match conn.query_row(
+            "SELECT client_secret_hash FROM oauth_clients WHERE client_id = ?1",
+            [client_id],
+            |row| row.get(0),
+        ) {
+            Ok(hash) => Ok(Some(hash)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(AtomicCoreError::Database(e)),
+        }
+    }
+
+    /// Store a new OAuth authorization code.
+    pub fn store_oauth_code(
+        &self,
+        code_hash: &str,
+        client_id: &str,
+        code_challenge: &str,
+        code_challenge_method: &str,
+        redirect_uri: &str,
+        created_at: &str,
+        expires_at: &str,
+    ) -> Result<(), AtomicCoreError> {
+        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO oauth_codes (code_hash, client_id, code_challenge, code_challenge_method, redirect_uri, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![code_hash, client_id, code_challenge, code_challenge_method, redirect_uri, created_at, expires_at],
+        )?;
+        Ok(())
+    }
+
+    /// Look up an OAuth authorization code by its hash.
+    /// Returns (client_id, code_challenge, expires_at, used).
+    pub fn lookup_oauth_code(&self, code_hash: &str) -> Result<Option<OAuthCodeInfo>, AtomicCoreError> {
+        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        match conn.query_row(
+            "SELECT client_id, code_challenge, expires_at, used FROM oauth_codes WHERE code_hash = ?1",
+            [code_hash],
+            |row| Ok(OAuthCodeInfo {
+                client_id: row.get(0)?,
+                code_challenge: row.get(1)?,
+                expires_at: row.get(2)?,
+                used: row.get::<_, i32>(3)? != 0,
+            }),
+        ) {
+            Ok(info) => Ok(Some(info)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(AtomicCoreError::Database(e)),
+        }
+    }
+
+    /// Mark an OAuth authorization code as used and optionally record the token_id.
+    pub fn mark_oauth_code_used(&self, code_hash: &str, token_id: Option<&str>) -> Result<(), AtomicCoreError> {
+        let conn = self.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        conn.execute(
+            "UPDATE oauth_codes SET used = 1 WHERE code_hash = ?1",
+            [code_hash],
+        )?;
+        if let Some(tid) = token_id {
+            conn.execute(
+                "UPDATE oauth_codes SET token_id = ?1 WHERE code_hash = ?2",
+                rusqlite::params![tid, code_hash],
+            )?;
+        }
+        Ok(())
     }
 }
 

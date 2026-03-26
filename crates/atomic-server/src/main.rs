@@ -40,19 +40,50 @@ async fn main() -> std::io::Result<()> {
         }
 
         // Server mode
-        Some(Command::Serve { port, bind, public_url }) => {
+        Some(Command::Serve { port, bind, public_url, storage, database_url }) => {
             // Auto-detect public URL on Fly.io if not explicitly set
             let public_url = public_url.or_else(|| {
                 std::env::var("FLY_APP_NAME").ok().map(|name| format!("https://{name}.fly.dev"))
             });
-            let manager = atomic_core::DatabaseManager::new(&data_dir)
-                .expect("Failed to open database manager");
+            let manager = create_manager(&data_dir, &storage, database_url.as_deref()).await;
             run_server(manager, &data_dir.display().to_string(), port, &bind, public_url).await
         }
         None => {
-            let manager = atomic_core::DatabaseManager::new(&data_dir)
-                .expect("Failed to open database manager");
+            let manager = create_manager(&data_dir, "sqlite", None).await;
             run_server(manager, &data_dir.display().to_string(), 8080, "127.0.0.1", None).await
+        }
+    }
+}
+
+/// Create a DatabaseManager based on the chosen storage backend.
+async fn create_manager(
+    data_dir: &std::path::Path,
+    storage: &str,
+    database_url: Option<&str>,
+) -> atomic_core::DatabaseManager {
+    match storage {
+        #[cfg(feature = "postgres")]
+        "postgres" => {
+            let url = database_url.unwrap_or_else(|| {
+                eprintln!("Error: --database-url is required when --storage=postgres");
+                eprintln!("Example: --database-url postgres://user:pass@localhost:5432/atomic");
+                eprintln!("Or set ATOMIC_DATABASE_URL environment variable.");
+                std::process::exit(1);
+            });
+            eprintln!("Storage: postgres ({})", url.split('@').last().unwrap_or(url));
+            atomic_core::DatabaseManager::new_postgres(data_dir, url)
+                .await
+                .expect("Failed to connect to Postgres")
+        }
+        #[cfg(not(feature = "postgres"))]
+        "postgres" => {
+            eprintln!("Error: Postgres support not compiled in. Rebuild with --features postgres");
+            std::process::exit(1);
+        }
+        _ => {
+            eprintln!("Storage: sqlite ({})", data_dir.display());
+            atomic_core::DatabaseManager::new(data_dir)
+                .expect("Failed to open database manager")
         }
     }
 }

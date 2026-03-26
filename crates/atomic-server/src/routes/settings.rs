@@ -135,24 +135,16 @@ pub async fn test_openai_compat_connection(
 
 #[utoipa::path(get, path = "/api/settings/models", responses((status = 200, description = "Available LLM models")), tag = "settings")]
 pub async fn get_available_llm_models(db: Db) -> HttpResponse {
-    use atomic_core::providers::models::{
-        fetch_and_return_capabilities, get_cached_capabilities_sync, save_capabilities_cache,
-    };
+    use atomic_core::providers::models::fetch_and_return_capabilities;
 
-    let database = db.0.database();
-    let (cached, is_stale) = {
-        let conn = match database.conn.lock() {
-            Ok(c) => c,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .json(serde_json::json!({"error": e.to_string()}));
-            }
-        };
-        match get_cached_capabilities_sync(&conn) {
-            Ok(Some(cache)) => (Some(cache.clone()), cache.is_stale()),
-            Ok(None) => (None, true),
-            Err(_) => (None, true),
+    let core = &db.0;
+    let (cached, is_stale) = match core.get_cached_capabilities() {
+        Ok(Some(cache)) => {
+            let stale = cache.is_stale();
+            (Some(cache), stale)
         }
+        Ok(None) => (None, true),
+        Err(_) => (None, true),
     };
 
     if let Some(ref cache) = cached {
@@ -164,9 +156,7 @@ pub async fn get_available_llm_models(db: Db) -> HttpResponse {
     let client = reqwest::Client::new();
     match fetch_and_return_capabilities(&client).await {
         Ok(fresh_cache) => {
-            if let Ok(conn) = database.new_connection() {
-                let _ = save_capabilities_cache(&conn, &fresh_cache);
-            }
+            let _ = core.save_capabilities_cache(&fresh_cache);
             HttpResponse::Ok().json(fresh_cache.get_models_with_structured_outputs())
         }
         Err(e) => {

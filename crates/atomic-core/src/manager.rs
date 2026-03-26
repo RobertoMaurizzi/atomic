@@ -31,6 +31,31 @@ impl DatabaseManager {
         })
     }
 
+    /// Create a manager that uses Postgres for data storage.
+    /// Registry stays as local SQLite for settings, tokens, OAuth, and DB metadata.
+    #[cfg(feature = "postgres")]
+    pub async fn new_postgres(
+        data_dir: impl AsRef<Path>,
+        database_url: &str,
+    ) -> Result<Self, AtomicCoreError> {
+        let registry = Arc::new(Registry::open_or_create(&data_dir)?);
+        let default_id = registry.get_default_database_id()?;
+
+        let core = AtomicCore::open_postgres(
+            database_url,
+            Some(Arc::clone(&registry)),
+        ).await?;
+
+        let mut cores_map = HashMap::new();
+        cores_map.insert(default_id.clone(), core);
+
+        Ok(DatabaseManager {
+            registry,
+            cores: RwLock::new(cores_map),
+            active_id: RwLock::new(default_id),
+        })
+    }
+
     /// Get a core for a specific database, loading it lazily if needed.
     pub fn get_core(&self, id: &str) -> Result<AtomicCore, AtomicCoreError> {
         // Fast path: already loaded
