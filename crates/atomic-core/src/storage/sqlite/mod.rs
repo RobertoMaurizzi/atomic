@@ -12,6 +12,7 @@ mod chat;
 mod wiki;
 mod feeds;
 mod clusters;
+mod settings;
 
 use crate::db::Database;
 use crate::storage::traits::*;

@@ -5,9 +5,8 @@
 //! shared utilities (save, load, citations, LLM calls) live here.
 
 mod agentic;
-mod centroid;
+pub(crate) mod centroid;
 
-use crate::db::Database;
 use crate::models::{
     ChunkWithContext, RelatedTag, SuggestedArticle, WikiArticle, WikiArticleSummary,
     WikiArticleStatus, WikiArticleVersion, WikiArticleWithCitations, WikiCitation,
@@ -16,12 +15,12 @@ use crate::models::{
 use crate::providers::traits::LlmConfig;
 use crate::providers::types::{GenerationParams, Message, StructuredOutputSchema};
 use crate::providers::{get_llm_provider, ProviderConfig};
+use crate::storage::StorageBackend;
 
 use chrono::Utc;
 use regex::Regex;
 use rusqlite::Connection;
 use serde::Deserialize;
-use std::sync::Arc;
 use uuid::Uuid;
 
 // ==================== Strategy Types ====================
@@ -47,7 +46,7 @@ impl WikiStrategy {
 
 /// Context passed to strategy implementations
 pub struct WikiStrategyContext {
-    pub db: Arc<Database>,
+    pub storage: StorageBackend,
     pub provider_config: ProviderConfig,
     pub wiki_model: String,
     pub tag_id: String,

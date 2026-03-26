@@ -187,6 +187,69 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Compaction(e))
     }
 
+    pub(crate) fn get_or_create_tag_impl(
+        &self,
+        name: &str,
+        parent_name: Option<&str>,
+    ) -> StorageResult<String> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        let parent_name_owned = parent_name.map(String::from);
+        crate::extraction::get_or_create_tag(&conn, name, &parent_name_owned)
+            .map_err(|e| AtomicCoreError::Validation(e))
+    }
+
+    pub(crate) fn link_tags_to_atom_impl(
+        &self,
+        atom_id: &str,
+        tag_ids: &[String],
+    ) -> StorageResult<()> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        crate::extraction::link_tags_to_atom(&conn, atom_id, tag_ids)
+            .map_err(|e| AtomicCoreError::Validation(e))
+    }
+
+    pub(crate) fn get_tag_tree_for_llm_impl(&self) -> StorageResult<String> {
+        let conn = self.db.read_conn()?;
+        crate::extraction::get_tag_tree_for_llm(&conn)
+            .map_err(|e| AtomicCoreError::Validation(e))
+    }
+
+    pub(crate) fn compute_tag_centroids_batch_impl(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<()> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        crate::embedding::compute_tag_embeddings_batch(&conn, tag_ids)
+            .map_err(|e| AtomicCoreError::Embedding(e))
+    }
+
+    pub(crate) fn cleanup_orphaned_parents_impl(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<()> {
+        let conn = self.db.conn.lock().map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        crate::extraction::cleanup_orphaned_parents(&conn, tag_id)
+            .map_err(|e| AtomicCoreError::Validation(e))
+    }
+
+    pub(crate) fn get_tag_hierarchy_impl(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<Vec<String>> {
+        let conn = self.db.read_conn()?;
+        crate::wiki::get_tag_hierarchy(&conn, tag_id)
+            .map_err(|e| AtomicCoreError::Wiki(e))
+    }
+
+    pub(crate) fn count_atoms_with_tags_impl(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<i32> {
+        let conn = self.db.read_conn()?;
+        crate::wiki::count_atoms_with_tags(&conn, tag_ids)
+            .map_err(|e| AtomicCoreError::Wiki(e))
+    }
+
     pub(crate) fn apply_tag_merges_impl(
         &self,
         merges: &[TagMerge],
@@ -263,5 +326,53 @@ impl TagStore for SqliteStorage {
         merges: &[TagMerge],
     ) -> StorageResult<CompactionResult> {
         self.apply_tag_merges_impl(merges)
+    }
+
+    async fn get_or_create_tag(
+        &self,
+        name: &str,
+        parent_name: Option<&str>,
+    ) -> StorageResult<String> {
+        self.get_or_create_tag_impl(name, parent_name)
+    }
+
+    async fn link_tags_to_atom(
+        &self,
+        atom_id: &str,
+        tag_ids: &[String],
+    ) -> StorageResult<()> {
+        self.link_tags_to_atom_impl(atom_id, tag_ids)
+    }
+
+    async fn get_tag_tree_for_llm(&self) -> StorageResult<String> {
+        self.get_tag_tree_for_llm_impl()
+    }
+
+    async fn compute_tag_centroids_batch(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<()> {
+        self.compute_tag_centroids_batch_impl(tag_ids)
+    }
+
+    async fn cleanup_orphaned_parents(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<()> {
+        self.cleanup_orphaned_parents_impl(tag_id)
+    }
+
+    async fn get_tag_hierarchy(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<Vec<String>> {
+        self.get_tag_hierarchy_impl(tag_id)
+    }
+
+    async fn count_atoms_with_tags(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<i32> {
+        self.count_atoms_with_tags_impl(tag_ids)
     }
 }

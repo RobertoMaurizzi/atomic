@@ -197,6 +197,123 @@ impl SearchStore for PostgresStorage {
         Ok(results)
     }
 
+    async fn keyword_search_chunks(
+        &self,
+        query: &str,
+        limit: i32,
+        scope_tag_ids: &[String],
+    ) -> StorageResult<Vec<ChunkSearchResult>> {
+        let query_trimmed = query.trim();
+        if query_trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let fetch_limit = limit * 3;
+        let rows: Vec<(String, String, String, i32, f32)> = sqlx::query_as(
+            "SELECT ac.id, ac.atom_id, ac.content, ac.chunk_index,
+                    ts_rank(ac.content_tsv, plainto_tsquery('english', $1)) AS rank
+             FROM atom_chunks ac
+             WHERE ac.content_tsv @@ plainto_tsquery('english', $1)
+             ORDER BY ts_rank(ac.content_tsv, plainto_tsquery('english', $1)) DESC
+             LIMIT $2",
+        )
+        .bind(query_trimmed)
+        .bind(fetch_limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::Search(format!("Keyword chunk search failed: {}", e)))?;
+
+        // Apply scope filter
+        let filtered = if scope_tag_ids.is_empty() {
+            rows
+        } else {
+            let candidate_atom_ids: Vec<&str> =
+                rows.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
+            let matching =
+                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, scope_tag_ids)
+                    .await?;
+            rows.into_iter()
+                .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
+                .collect()
+        };
+
+        Ok(filtered
+            .into_iter()
+            .take(limit as usize)
+            .map(|(chunk_id, atom_id, content, chunk_index, rank)| {
+                ChunkSearchResult {
+                    chunk_id,
+                    atom_id,
+                    content,
+                    chunk_index,
+                    score: rank.clamp(0.0, 1.0),
+                }
+            })
+            .collect())
+    }
+
+    async fn vector_search_chunks(
+        &self,
+        query_embedding: &[f32],
+        limit: i32,
+        threshold: f32,
+        scope_tag_ids: &[String],
+    ) -> StorageResult<Vec<ChunkSearchResult>> {
+        let embedding_vec = Vector::from(query_embedding.to_vec());
+        let fetch_limit = limit * 5;
+
+        let rows: Vec<(String, String, String, i32, f64)> = sqlx::query_as(
+            "SELECT ac.id, ac.atom_id, ac.content, ac.chunk_index,
+                    (ac.embedding <=> $1::vector) AS distance
+             FROM atom_chunks ac
+             WHERE ac.embedding IS NOT NULL
+             ORDER BY ac.embedding <=> $1::vector
+             LIMIT $2",
+        )
+        .bind(&embedding_vec)
+        .bind(fetch_limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::Search(format!("Vector chunk search failed: {}", e)))?;
+
+        let filtered: Vec<(String, String, String, i32, f32)> = rows
+            .into_iter()
+            .map(|(id, aid, content, idx, distance)| {
+                (id, aid, content, idx, 1.0 - distance as f32)
+            })
+            .filter(|(_, _, _, _, similarity)| *similarity >= threshold)
+            .collect();
+
+        // Apply scope filter
+        let scoped = if scope_tag_ids.is_empty() {
+            filtered
+        } else {
+            let candidate_atom_ids: Vec<&str> =
+                filtered.iter().map(|(_, aid, _, _, _)| aid.as_str()).collect();
+            let matching =
+                pg_batch_atoms_with_scope_tags(&self.pool, &candidate_atom_ids, scope_tag_ids)
+                    .await?;
+            filtered
+                .into_iter()
+                .filter(|(_, aid, _, _, _)| matching.contains(aid.as_str()))
+                .collect()
+        };
+
+        Ok(scoped
+            .into_iter()
+            .take(limit as usize)
+            .map(|(chunk_id, atom_id, content, chunk_index, score)| {
+                ChunkSearchResult {
+                    chunk_id,
+                    atom_id,
+                    content,
+                    chunk_index,
+                    score,
+                }
+            })
+            .collect())
+    }
+
     async fn find_similar(
         &self,
         atom_id: &str,

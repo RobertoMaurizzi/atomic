@@ -728,4 +728,45 @@ impl ChatStore for PostgresStorage {
         }
         Ok(())
     }
+
+    async fn get_scope_tag_ids(
+        &self,
+        conversation_id: &str,
+    ) -> StorageResult<Vec<String>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT tag_id FROM conversation_tags WHERE conversation_id = $1",
+        )
+        .bind(conversation_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(rows)
+    }
+
+    async fn get_scope_description(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<String> {
+        if tag_ids.is_empty() {
+            return Ok("You have access to ALL atoms in the knowledge base.".to_string());
+        }
+
+        let names = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM tags WHERE id = ANY($1)",
+        )
+        .bind(tag_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        if names.is_empty() {
+            Ok("You have access to a scoped set of atoms.".to_string())
+        } else {
+            Ok(format!(
+                "You have access to atoms tagged with: {}. Focus your search on these topics.",
+                names.join(", ")
+            ))
+        }
+    }
 }

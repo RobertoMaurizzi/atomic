@@ -412,4 +412,29 @@ impl FeedStore for PostgresStorage {
         .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         Ok(())
     }
+
+    async fn backfill_feed_metadata(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        site_url: Option<&str>,
+    ) -> StorageResult<()> {
+        if let Some(t) = title {
+            sqlx::query("UPDATE feeds SET title = COALESCE(title, $1) WHERE id = $2")
+                .bind(t)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        }
+        if let Some(s) = site_url {
+            sqlx::query("UPDATE feeds SET site_url = COALESCE(site_url, $1) WHERE id = $2")
+                .bind(s)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        }
+        Ok(())
+    }
 }

@@ -626,6 +626,302 @@ impl TagStore for PostgresStorage {
         Ok(result.trim_end().to_string())
     }
 
+    async fn get_or_create_tag(
+        &self,
+        name: &str,
+        parent_name: Option<&str>,
+    ) -> StorageResult<String> {
+        let trimmed_name = name.trim();
+
+        // Validate tag name
+        if trimmed_name.is_empty() || trimmed_name.eq_ignore_ascii_case("null") {
+            return Err(AtomicCoreError::DatabaseOperation(
+                format!("Invalid tag name: '{}'", name),
+            ));
+        }
+
+        // Try to find existing tag (case-insensitive)
+        let existing_id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM tags WHERE LOWER(name) = LOWER($1)",
+        )
+        .bind(trimmed_name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        if let Some(id) = existing_id {
+            return Ok(id);
+        }
+
+        // Tag doesn't exist - require a valid parent for new tags
+        let parent = parent_name.ok_or_else(|| {
+            AtomicCoreError::DatabaseOperation(
+                format!("New tag '{}' requires a parent category", trimmed_name),
+            )
+        })?;
+
+        let trimmed_parent = parent.trim();
+        if trimmed_parent.is_empty() || trimmed_parent.eq_ignore_ascii_case("null") {
+            return Err(AtomicCoreError::DatabaseOperation(
+                format!("New tag '{}' requires a valid parent category", trimmed_name),
+            ));
+        }
+
+        // Parent must be an existing top-level tag (parent_id IS NULL)
+        let parent_id: String = sqlx::query_scalar(
+            "SELECT id FROM tags WHERE LOWER(name) = LOWER($1) AND parent_id IS NULL",
+        )
+        .bind(trimmed_parent)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+        .ok_or_else(|| {
+            AtomicCoreError::DatabaseOperation(format!(
+                "Parent '{}' is not a valid top-level category for tag '{}'",
+                trimmed_parent, trimmed_name,
+            ))
+        })?;
+
+        // Create the tag under the validated parent
+        let tag_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO tags (id, name, parent_id, created_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&tag_id)
+        .bind(trimmed_name)
+        .bind(&parent_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(
+            format!("Failed to create tag '{}': {}", trimmed_name, e),
+        ))?;
+
+        Ok(tag_id)
+    }
+
+    async fn link_tags_to_atom(
+        &self,
+        atom_id: &str,
+        tag_ids: &[String],
+    ) -> StorageResult<()> {
+        for tag_id in tag_ids {
+            sqlx::query(
+                "INSERT INTO atom_tags (atom_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            )
+            .bind(atom_id)
+            .bind(tag_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(
+                format!("Failed to link tag to atom: {}", e),
+            ))?;
+        }
+        Ok(())
+    }
+
+    async fn get_tag_tree_for_llm(&self) -> StorageResult<String> {
+        // Step 1: Get top-level category tags
+        let top_level_tags: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, name FROM tags WHERE parent_id IS NULL ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        if top_level_tags.is_empty() {
+            return Ok("(no existing tags)".to_string());
+        }
+
+        // Step 2: For each top-level tag, get top 10 most-used child tags by atom count
+        let mut result = String::new();
+
+        for (parent_id, parent_name) in &top_level_tags {
+            result.push_str(parent_name);
+            result.push('\n');
+
+            // Query top 10 children by atom count
+            let children: Vec<(String,)> = sqlx::query_as(
+                "SELECT t.name
+                 FROM tags t
+                 LEFT JOIN atom_tags at ON t.id = at.tag_id
+                 WHERE t.parent_id = $1
+                 GROUP BY t.id, t.name
+                 ORDER BY COUNT(at.atom_id) DESC, t.name ASC
+                 LIMIT 10",
+            )
+            .bind(parent_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+            // Add children with tree formatting
+            for (j, (child_name,)) in children.iter().enumerate() {
+                let is_last_child = j == children.len() - 1;
+                let connector = if is_last_child { "\u{2514}\u{2500}\u{2500} " } else { "\u{251c}\u{2500}\u{2500} " };
+                result.push_str(connector);
+                result.push_str(child_name);
+                result.push('\n');
+            }
+        }
+
+        Ok(result.trim_end().to_string())
+    }
+
+    async fn compute_tag_centroids_batch(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<()> {
+        use pgvector::Vector;
+
+        for tag_id in tag_ids {
+            // Get all descendant tag IDs (recursive CTE)
+            let descendant_ids: Vec<(String,)> = sqlx::query_as(
+                "WITH RECURSIVE descendant_tags(id) AS (
+                    SELECT $1::text
+                    UNION ALL
+                    SELECT t.id FROM tags t
+                    INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+                )
+                SELECT id FROM descendant_tags",
+            )
+            .bind(tag_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(
+                format!("Failed to get tag descendants: {}", e),
+            ))?;
+
+            let desc_ids: Vec<String> = descendant_ids.into_iter().map(|(id,)| id).collect();
+
+            // Get all chunk embeddings for atoms tagged with any descendant tag
+            let embeddings: Vec<(Vector,)> = sqlx::query_as(
+                "SELECT ac.embedding
+                 FROM atom_chunks ac
+                 INNER JOIN atom_tags at ON ac.atom_id = at.atom_id
+                 WHERE at.tag_id = ANY($1) AND ac.embedding IS NOT NULL",
+            )
+            .bind(&desc_ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(
+                format!("Failed to get embeddings for tag centroid: {}", e),
+            ))?;
+
+            if embeddings.is_empty() {
+                continue;
+            }
+
+            // Compute centroid (average of all embeddings)
+            let embedding_vecs: Vec<Vec<f32>> = embeddings
+                .into_iter()
+                .map(|(v,)| v.to_vec())
+                .collect();
+
+            let dim = embedding_vecs[0].len();
+            let mut centroid = vec![0.0f32; dim];
+            let n = embedding_vecs.len() as f32;
+
+            for emb in &embedding_vecs {
+                for (i, val) in emb.iter().enumerate() {
+                    if i < dim {
+                        centroid[i] += val;
+                    }
+                }
+            }
+            for val in centroid.iter_mut() {
+                *val /= n;
+            }
+
+            // Normalize the centroid
+            let magnitude: f32 = centroid.iter().map(|v| v * v).sum::<f32>().sqrt();
+            if magnitude > 0.0 {
+                for val in centroid.iter_mut() {
+                    *val /= magnitude;
+                }
+            }
+
+            // Save the centroid
+            let pg_embedding = Vector::from(centroid);
+            sqlx::query(
+                "INSERT INTO tag_embeddings (tag_id, embedding)
+                 VALUES ($1, $2)
+                 ON CONFLICT (tag_id) DO UPDATE SET embedding = EXCLUDED.embedding",
+            )
+            .bind(tag_id)
+            .bind(&pg_embedding)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(
+                format!("Failed to save tag centroid: {}", e),
+            ))?;
+        }
+
+        Ok(())
+    }
+
+    async fn cleanup_orphaned_parents(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<()> {
+        // Get parent of this tag
+        let parent_id: Option<String> = sqlx::query_scalar(
+            "SELECT parent_id FROM tags WHERE id = $1",
+        )
+        .bind(tag_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+        .flatten();
+
+        if let Some(parent) = parent_id {
+            // Check if parent has any children left
+            let child_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM tags WHERE parent_id = $1",
+            )
+            .bind(&parent)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+            // Check if parent is linked to any atoms
+            let atom_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM atom_tags WHERE tag_id = $1",
+            )
+            .bind(&parent)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+            // Check if parent has a wiki article
+            let has_wiki: bool = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM wiki_articles WHERE tag_id = $1)",
+            )
+            .bind(&parent)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(false);
+
+            // If parent is unused and has no wiki, delete it and recurse
+            if child_count == 0 && atom_count == 0 && !has_wiki {
+                eprintln!("Cleaning up orphaned parent tag: {}", parent);
+                sqlx::query("DELETE FROM tags WHERE id = $1")
+                    .bind(&parent)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| AtomicCoreError::DatabaseOperation(
+                        format!("Failed to delete orphaned parent: {}", e),
+                    ))?;
+                // Recurse to grandparent using Box::pin for async recursion
+                Box::pin(self.cleanup_orphaned_parents(&parent)).await?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn apply_tag_merges(
         &self,
         merges: &[TagMerge],
@@ -656,5 +952,45 @@ impl TagStore for PostgresStorage {
             tags_merged,
             atoms_retagged,
         })
+    }
+
+    async fn get_tag_hierarchy(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<Vec<String>> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "WITH RECURSIVE descendant_tags(id) AS (
+                SELECT $1::text
+                UNION ALL
+                SELECT t.id FROM tags t
+                INNER JOIN descendant_tags dt ON t.parent_id = dt.id
+            )
+            SELECT id FROM descendant_tags",
+        )
+        .bind(tag_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(rows)
+    }
+
+    async fn count_atoms_with_tags(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<i32> {
+        if tag_ids.is_empty() {
+            return Ok(0);
+        }
+        // Postgres doesn't support IN with bound array easily, so use ANY
+        let count: Option<i64> = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT atom_id) FROM atom_tags WHERE tag_id = ANY($1)",
+        )
+        .bind(tag_ids)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(count.unwrap_or(0) as i32)
     }
 }

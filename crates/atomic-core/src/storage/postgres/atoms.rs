@@ -789,6 +789,30 @@ impl AtomStore for PostgresStorage {
         Ok(())
     }
 
+    async fn get_atom_tag_ids(&self, atom_id: &str) -> StorageResult<Vec<String>> {
+        let ids: Vec<(String,)> = sqlx::query_as(
+            "SELECT tag_id FROM atom_tags WHERE atom_id = $1",
+        )
+        .bind(atom_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(ids.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn get_atom_content(&self, atom_id: &str) -> StorageResult<Option<String>> {
+        let content: Option<String> = sqlx::query_scalar(
+            "SELECT content FROM atoms WHERE id = $1",
+        )
+        .bind(atom_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(content)
+    }
+
     async fn get_atoms_with_embeddings(&self) -> StorageResult<Vec<AtomWithEmbedding>> {
         // Fetch all atoms
         let rows: Vec<(
@@ -843,5 +867,41 @@ impl AtomStore for PostgresStorage {
             .collect();
 
         Ok(result)
+    }
+
+    async fn check_existing_source_urls(&self, urls: &[String]) -> StorageResult<std::collections::HashSet<String>> {
+        if urls.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT source_url FROM atoms WHERE source_url = ANY($1)",
+        )
+        .bind(urls)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(url,)| url).collect())
+    }
+
+    async fn source_url_exists(&self, url: &str) -> StorageResult<bool> {
+        let exists: Option<bool> = sqlx::query_scalar::<_, Option<bool>>(
+            "SELECT EXISTS(SELECT 1 FROM atoms WHERE source_url = $1)",
+        )
+        .bind(url)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(exists.unwrap_or(false))
+    }
+
+    async fn count_pending_embeddings(&self) -> StorageResult<i32> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM atoms WHERE embedding_status = 'pending'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(count as i32)
     }
 }

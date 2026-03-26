@@ -179,7 +179,7 @@ impl ChunkStore for PostgresStorage {
 
         for (idx, atom_id) in atom_ids.iter().enumerate() {
             match self
-                .compute_semantic_edges_for_atom(atom_id, threshold, max_edges)
+                .compute_semantic_edges_for_atom_impl(atom_id, threshold, max_edges)
                 .await
             {
                 Ok(edge_count) => {
@@ -712,6 +712,53 @@ impl ChunkStore for PostgresStorage {
         Ok(count)
     }
 
+    async fn claim_pending_embeddings(&self, limit: i32) -> StorageResult<Vec<(String, String)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "UPDATE atoms SET embedding_status = 'processing'
+             WHERE id IN (SELECT id FROM atoms WHERE embedding_status = 'pending' LIMIT $1)
+             RETURNING id, content",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            AtomicCoreError::DatabaseOperation(format!(
+                "Failed to claim pending embeddings: {}",
+                e
+            ))
+        })?;
+        Ok(rows)
+    }
+
+    async fn delete_chunks_batch(&self, atom_ids: &[String]) -> StorageResult<()> {
+        sqlx::query("DELETE FROM atom_chunks WHERE atom_id = ANY($1)")
+            .bind(atom_ids)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                AtomicCoreError::DatabaseOperation(format!(
+                    "Failed to delete chunks batch: {}",
+                    e
+                ))
+            })?;
+        Ok(())
+    }
+
+    async fn compute_semantic_edges_for_atom(
+        &self,
+        atom_id: &str,
+        threshold: f32,
+        max_edges: i32,
+    ) -> StorageResult<i32> {
+        // Delegate to the private helper method
+        self.compute_semantic_edges_for_atom_impl(atom_id, threshold, max_edges).await
+    }
+
+    async fn rebuild_fts_index(&self) -> StorageResult<()> {
+        // No-op for Postgres: tsvector is auto-maintained via generated column
+        Ok(())
+    }
+
     async fn check_vector_extension(&self) -> StorageResult<String> {
         let version: (String,) = sqlx::query_as(
             "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
@@ -726,13 +773,81 @@ impl ChunkStore for PostgresStorage {
         })?;
         Ok(format!("pgvector {}", version.0))
     }
+
+    async fn claim_pending_tagging(&self) -> StorageResult<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "UPDATE atoms SET tagging_status = 'processing'
+             WHERE embedding_status = 'complete'
+             AND tagging_status = 'pending'
+             RETURNING id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn get_embedding_dimension(&self) -> StorageResult<Option<usize>> {
+        let dim: Option<i32> = sqlx::query_scalar::<_, Option<i32>>(
+            "SELECT atttypmod FROM pg_attribute
+             WHERE attrelid = 'atom_chunks'::regclass
+             AND attname = 'embedding'
+             AND atttypmod > 0",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?
+        .flatten();
+        Ok(dim.map(|d| d as usize))
+    }
+
+    async fn recreate_vector_index(&self, dimension: usize) -> StorageResult<()> {
+        sqlx::query(&format!(
+            "ALTER TABLE atom_chunks ALTER COLUMN embedding TYPE vector({})",
+            dimension
+        ))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(format!(
+            "Failed to recreate vector index: {}", e
+        )))?;
+
+        sqlx::query("UPDATE atoms SET embedding_status = 'pending'")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        sqlx::query("UPDATE atoms SET tagging_status = 'skipped'")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        sqlx::query("DELETE FROM atom_chunks")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn claim_pending_reembedding(&self) -> StorageResult<Vec<(String, String)>> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "UPDATE atoms SET embedding_status = 'processing'
+             WHERE embedding_status IN ('pending', 'processing')
+             RETURNING id, content",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
+        Ok(rows)
+    }
 }
 
 // ==================== Private Helpers ====================
 
 impl PostgresStorage {
-    /// Compute semantic edges for a single atom using pgvector similarity search.
-    async fn compute_semantic_edges_for_atom(
+    /// Compute semantic edges for a single atom using pgvector similarity search (internal impl).
+    async fn compute_semantic_edges_for_atom_impl(
         &self,
         atom_id: &str,
         threshold: f32,

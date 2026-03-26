@@ -360,6 +360,32 @@ impl SqliteStorage {
         Ok(())
     }
 
+    pub(crate) fn backfill_feed_metadata_sync(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        site_url: Option<&str>,
+    ) -> StorageResult<()> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        if let Some(t) = title {
+            conn.execute(
+                "UPDATE feeds SET title = COALESCE(title, ?1) WHERE id = ?2",
+                rusqlite::params![t, id],
+            )?;
+        }
+        if let Some(s) = site_url {
+            conn.execute(
+                "UPDATE feeds SET site_url = COALESCE(site_url, ?1) WHERE id = ?2",
+                rusqlite::params![s, id],
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn mark_feed_item_skipped_sync(
         &self,
         feed_id: &str,
@@ -451,5 +477,14 @@ impl FeedStore for SqliteStorage {
         reason: &str,
     ) -> StorageResult<()> {
         self.mark_feed_item_skipped_sync(feed_id, guid, reason)
+    }
+
+    async fn backfill_feed_metadata(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        site_url: Option<&str>,
+    ) -> StorageResult<()> {
+        self.backfill_feed_metadata_sync(id, title, site_url)
     }
 }

@@ -4,17 +4,15 @@
 //! then synthesizes the article from the agent's selected chunks.
 
 use crate::chunking::count_tokens;
-use crate::db::Database;
-use crate::models::{ChunkWithContext, WikiArticleWithCitations};
+use crate::models::{ChunkWithContext, ChunkSearchResult, WikiArticleWithCitations};
 use crate::providers::types::{CompletionResponse, Message, ToolDefinition};
-use crate::providers::{get_llm_provider, LlmConfig};
-use crate::search::{search_chunks, ChunkResult, SearchMode, SearchOptions};
+use crate::providers::{get_llm_provider, get_embedding_provider, EmbeddingConfig, LlmConfig};
+use crate::storage::StorageBackend;
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use super::{
-    count_atoms_with_tags, get_tag_hierarchy, synthesize_article, WikiStrategyContext,
+    synthesize_article, WikiStrategyContext,
 };
 
 // ==================== Constants ====================
@@ -26,7 +24,7 @@ const DEFAULT_SEARCH_LIMIT: i32 = 15;
 
 struct ResearchContext {
     /// All chunks returned by searches, indexed by position (session ID = C{index+1})
-    returned_chunks: Vec<ChunkResult>,
+    returned_chunks: Vec<ChunkSearchResult>,
     /// Set of chunk_ids already returned (for filtering future searches)
     seen_chunk_ids: HashSet<String>,
     /// Indices into returned_chunks that the agent selected
@@ -136,7 +134,8 @@ fn research_tools() -> Vec<ToolDefinition> {
 
 async fn handle_search(
     rc: &mut ResearchContext,
-    db: &Database,
+    storage: &StorageBackend,
+    provider_config: &crate::providers::ProviderConfig,
     scope_tag_ids: &[String],
     args: &serde_json::Value,
 ) -> String {
@@ -157,16 +156,54 @@ async fn handle_search(
 
     eprintln!("[wiki/agentic] search(\"{}\" limit={})", query, limit);
 
-    let options = SearchOptions::new(&query, SearchMode::Hybrid, limit)
-        .with_scope(scope_tag_ids.to_vec());
-
-    let results = match search_chunks(db, options).await {
+    // Perform hybrid search: keyword + vector, merged via RRF
+    let keyword_results = match storage.keyword_search_chunks_sync(&query, limit * 2, scope_tag_ids) {
         Ok(r) => r,
-        Err(e) => return format!("Search error: {}", e),
+        Err(e) => return format!("Keyword search error: {}", e),
     };
 
+    // Try to generate query embedding for vector search
+    let vector_results = match get_embedding_provider(provider_config) {
+        Ok(provider) => {
+            let embed_config = EmbeddingConfig::new(provider_config.embedding_model());
+            match provider.embed_batch(&[query.clone()], &embed_config).await {
+                Ok(embeddings) if !embeddings.is_empty() && !embeddings[0].is_empty() => {
+                    match storage.vector_search_chunks_sync(&embeddings[0], limit * 2, 0.3, scope_tag_ids) {
+                        Ok(r) => r,
+                        Err(_) => Vec::new(),
+                    }
+                }
+                _ => Vec::new(),
+            }
+        }
+        Err(_) => Vec::new(),
+    };
+
+    // Merge results using RRF-like approach: convert to SemanticSearchResult temporarily is overkill,
+    // just do a simple dedup by chunk_id with best score
+    let mut combined: Vec<ChunkSearchResult> = Vec::new();
+    let mut seen_in_merge: HashSet<String> = HashSet::new();
+
+    // Interleave: take from both lists by rank
+    let max_len = keyword_results.len().max(vector_results.len());
+    for i in 0..max_len {
+        if let Some(kr) = keyword_results.get(i) {
+            if !seen_in_merge.contains(&kr.chunk_id) {
+                seen_in_merge.insert(kr.chunk_id.clone());
+                combined.push(kr.clone());
+            }
+        }
+        if let Some(vr) = vector_results.get(i) {
+            if !seen_in_merge.contains(&vr.chunk_id) {
+                seen_in_merge.insert(vr.chunk_id.clone());
+                combined.push(vr.clone());
+            }
+        }
+    }
+    combined.truncate(limit as usize);
+
     // Filter out already-seen chunks
-    let new_results: Vec<ChunkResult> = results
+    let new_results: Vec<ChunkSearchResult> = combined
         .into_iter()
         .filter(|r| !rc.seen_chunk_ids.contains(&r.chunk_id))
         .collect();
@@ -273,7 +310,7 @@ fn handle_done(rc: &ResearchContext) -> String {
 
 async fn run_research(
     rc: &mut ResearchContext,
-    db: &Database,
+    storage: &StorageBackend,
     scope_tag_ids: &[String],
     provider_config: &crate::providers::ProviderConfig,
     model: &str,
@@ -332,7 +369,7 @@ async fn run_research(
                 .unwrap_or(serde_json::json!({}));
 
             let result = match name {
-                "search" => handle_search(rc, db, scope_tag_ids, &args).await,
+                "search" => handle_search(rc, storage, provider_config, scope_tag_ids, &args).await,
                 "select" => handle_select(rc, &args, max_source_tokens),
                 "done" => {
                     research_done = true;
@@ -432,22 +469,14 @@ pub(crate) async fn generate(
     eprintln!("[wiki/agentic] Starting agentic research for \"{}\" (budget {} tokens)...", ctx.tag_name, max_tokens);
 
     // Get scope tag IDs and atom count
-    let (scope_tag_ids, atom_count) = {
-        let conn = ctx.db.conn.lock().map_err(|e| e.to_string())?;
-        let tag_ids = get_tag_hierarchy(&conn, &ctx.tag_id)?;
-        let count = count_atoms_with_tags(&conn, &tag_ids)?;
-        (tag_ids, count)
-    };
+    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id)
+        .map_err(|e| e.to_string())?;
+    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids)
+        .map_err(|e| e.to_string())?;
 
     if atom_count == 0 {
         return Err("No content found for this tag".to_string());
     }
-
-    // Open a separate DB connection for async search
-    let search_db = Arc::new(
-        Database::open(&ctx.db.db_path)
-            .map_err(|e| format!("Failed to create search DB connection: {}", e))?,
-    );
 
     // Run research
     let mut rc = ResearchContext::new(
@@ -457,7 +486,7 @@ pub(crate) async fn generate(
 
     run_research(
         &mut rc,
-        &search_db,
+        &ctx.storage,
         &scope_tag_ids,
         &ctx.provider_config,
         &ctx.wiki_model,
@@ -507,17 +536,10 @@ pub(crate) async fn update(
     let max_tokens = ctx.max_source_tokens();
     eprintln!("[wiki/agentic] Starting agentic update for \"{}\" (budget {} tokens)...", ctx.tag_name, max_tokens);
 
-    let (scope_tag_ids, atom_count) = {
-        let conn = ctx.db.conn.lock().map_err(|e| e.to_string())?;
-        let tag_ids = get_tag_hierarchy(&conn, &ctx.tag_id)?;
-        let count = count_atoms_with_tags(&conn, &tag_ids)?;
-        (tag_ids, count)
-    };
-
-    let search_db = Arc::new(
-        Database::open(&ctx.db.db_path)
-            .map_err(|e| format!("Failed to create search DB connection: {}", e))?,
-    );
+    let scope_tag_ids = ctx.storage.get_tag_hierarchy_impl(&ctx.tag_id)
+        .map_err(|e| e.to_string())?;
+    let atom_count = ctx.storage.count_atoms_with_tags_impl(&scope_tag_ids)
+        .map_err(|e| e.to_string())?;
 
     let mut rc = ResearchContext::new(
         research_system_prompt(&ctx.tag_name),
@@ -526,7 +548,7 @@ pub(crate) async fn update(
 
     run_research(
         &mut rc,
-        &search_db,
+        &ctx.storage,
         &scope_tag_ids,
         &ctx.provider_config,
         &ctx.wiki_model,

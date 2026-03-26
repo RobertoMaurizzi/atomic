@@ -148,6 +148,30 @@ impl SqliteStorage {
             .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
         crate::chat::save_citations(&conn, message_id, citations)
     }
+
+    pub(crate) fn get_scope_tag_ids_sync(
+        &self,
+        conversation_id: &str,
+    ) -> StorageResult<Vec<String>> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        crate::chat::get_scope_tag_ids(&conn, conversation_id)
+    }
+
+    pub(crate) fn get_scope_description_sync(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<String> {
+        let conn = self
+            .db
+            .conn
+            .lock()
+            .map_err(|e| AtomicCoreError::Lock(e.to_string()))?;
+        Ok(crate::chat::get_scope_description(&conn, tag_ids))
+    }
 }
 
 #[async_trait]
@@ -304,6 +328,32 @@ impl ChatStore for SqliteStorage {
         let citations = citations.to_vec();
         tokio::task::spawn_blocking(move || {
             storage.save_citations_sync(&message_id, &citations)
+        })
+        .await
+        .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
+    }
+
+    async fn get_scope_tag_ids(
+        &self,
+        conversation_id: &str,
+    ) -> StorageResult<Vec<String>> {
+        let storage = self.clone();
+        let conversation_id = conversation_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            storage.get_scope_tag_ids_sync(&conversation_id)
+        })
+        .await
+        .map_err(|e| AtomicCoreError::Lock(e.to_string()))?
+    }
+
+    async fn get_scope_description(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<String> {
+        let storage = self.clone();
+        let tag_ids = tag_ids.to_vec();
+        tokio::task::spawn_blocking(move || {
+            storage.get_scope_description_sync(&tag_ids)
         })
         .await
         .map_err(|e| AtomicCoreError::Lock(e.to_string()))?

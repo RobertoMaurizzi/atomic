@@ -4,7 +4,6 @@
 //! then generates/updates articles via a single-shot LLM call.
 
 use crate::chunking::count_tokens;
-use crate::db::Database;
 use crate::embedding::distance_to_similarity;
 use crate::models::{ChunkWithContext, WikiArticle, WikiArticleWithCitations, WikiCitation};
 use crate::providers::ProviderConfig;
@@ -13,8 +12,8 @@ use chrono::Utc;
 use rusqlite::Connection;
 
 use super::{
-    call_llm_for_wiki, extract_citations, batch_fetch_chunk_details, count_atoms_with_tags,
-    get_tag_hierarchy, synthesize_article, WikiStrategyContext,
+    call_llm_for_wiki, extract_citations, batch_fetch_chunk_details,
+    synthesize_article, WikiStrategyContext,
     WIKI_UPDATE_SYSTEM_PROMPT,
 };
 
@@ -41,7 +40,17 @@ pub(crate) async fn generate(
 ) -> Result<WikiArticleWithCitations, String> {
     let max_tokens = ctx.max_source_tokens();
     eprintln!("[wiki/centroid] Preparing sources (centroid similarity, budget {} tokens)...", max_tokens);
-    let input = prepare_wiki_generation(&ctx.db, &ctx.provider_config, &ctx.tag_id, &ctx.tag_name, max_tokens).await?;
+
+    let (chunks, atom_count) = ctx.storage.get_wiki_source_chunks_sync(&ctx.tag_id, max_tokens)
+        .map_err(|e| e.to_string())?;
+
+    let input = WikiGenerationInput {
+        chunks,
+        atom_count,
+        tag_id: ctx.tag_id.clone(),
+        tag_name: ctx.tag_name.clone(),
+    };
+
     eprintln!("[wiki/centroid] Found {} chunks from {} atoms", input.chunks.len(), input.atom_count);
 
     eprintln!("[wiki/centroid] Calling LLM...");
@@ -62,21 +71,29 @@ pub(crate) async fn update(
     existing: &WikiArticleWithCitations,
 ) -> Result<Option<WikiArticleWithCitations>, String> {
     let max_tokens = ctx.max_source_tokens();
-    let update_input = {
-        let conn = ctx.db.conn.lock().map_err(|e| e.to_string())?;
-        prepare_wiki_update(
-            &conn,
-            &ctx.tag_id,
-            &ctx.tag_name,
-            &existing.article,
-            &existing.citations,
-            max_tokens,
-        )?
+
+    let update_data = ctx.storage.get_wiki_update_chunks_sync(
+        &ctx.tag_id,
+        &existing.article.updated_at,
+        max_tokens,
+    ).map_err(|e| e.to_string())?;
+
+    let (new_chunks, atom_count) = match update_data {
+        Some(data) => data,
+        None => return Ok(None),
     };
 
-    let input = match update_input {
-        Some(input) => input,
-        None => return Ok(None),
+    eprintln!(
+        "[wiki/centroid] Update: {} new chunks",
+        new_chunks.len()
+    );
+
+    let input = WikiUpdateInput {
+        new_chunks,
+        existing_article: existing.article.clone(),
+        existing_citations: existing.citations.clone(),
+        atom_count,
+        tag_id: ctx.tag_id.clone(),
     };
 
     let result = update_wiki_content(
@@ -89,79 +106,8 @@ pub(crate) async fn update(
     Ok(Some(result))
 }
 
-/// Prepare data for wiki article generation.
-///
-/// Uses the tag's centroid embedding to rank all chunks under the tag hierarchy
-/// by semantic relevance, then selects the top chunks that fit within the token budget.
-/// Falls back to a simple SQL fetch (ordered by atom/chunk index) if no centroid exists.
-async fn prepare_wiki_generation(
-    db: &Database,
-    _provider_config: &ProviderConfig,
-    tag_id: &str,
-    tag_name: &str,
-    max_source_tokens: usize,
-) -> Result<WikiGenerationInput, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-
-    // Get all descendant tag IDs (including the tag itself)
-    let all_tag_ids = get_tag_hierarchy(&conn, tag_id)?;
-
-    if all_tag_ids.is_empty() {
-        return Err("No content found for this tag".to_string());
-    }
-
-    // Build the set of atom IDs under this tag hierarchy (for filtering vec_chunks results)
-    let placeholders = all_tag_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let atom_ids_query = format!(
-        "SELECT DISTINCT atom_id FROM atom_tags WHERE tag_id IN ({})",
-        placeholders
-    );
-    let mut stmt = conn.prepare(&atom_ids_query)
-        .map_err(|e| format!("Failed to prepare atom_ids query: {}", e))?;
-    let scoped_atom_ids: std::collections::HashSet<String> = stmt
-        .query_map(rusqlite::params_from_iter(all_tag_ids.iter()), |row| row.get(0))
-        .map_err(|e| format!("Failed to query atom_ids: {}", e))?
-        .collect::<Result<std::collections::HashSet<_>, _>>()
-        .map_err(|e| format!("Failed to collect atom_ids: {}", e))?;
-
-    if scoped_atom_ids.is_empty() {
-        return Err("No content found for this tag".to_string());
-    }
-
-    // Try to load the tag's centroid embedding for ranked retrieval
-    let centroid_blob: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT embedding FROM tag_embeddings WHERE tag_id = ?1",
-            [tag_id],
-            |row| row.get(0),
-        )
-        .ok();
-
-    let chunks = if let Some(ref centroid) = centroid_blob {
-        // Ranked path: query vec_chunks with centroid, filter to scoped atoms, fill token budget
-        select_chunks_by_centroid(&conn, centroid, &scoped_atom_ids, max_source_tokens)?
-    } else {
-        // Fallback: no centroid yet (e.g. embeddings haven't run), fetch by insertion order
-        eprintln!("[wiki/centroid] No centroid for tag {}, falling back to unranked chunk selection", tag_id);
-        select_chunks_unranked(&conn, &placeholders, &all_tag_ids, max_source_tokens)?
-    };
-
-    if chunks.is_empty() {
-        return Err("No content found for this tag".to_string());
-    }
-
-    let atom_count = count_atoms_with_tags(&conn, &all_tag_ids)?;
-
-    Ok(WikiGenerationInput {
-        chunks,
-        atom_count,
-        tag_id: tag_id.to_string(),
-        tag_name: tag_name.to_string(),
-    })
-}
-
 /// Select chunks ranked by similarity to the tag centroid, up to the token budget.
-fn select_chunks_by_centroid(
+pub(crate) fn select_chunks_by_centroid(
     conn: &Connection,
     centroid_blob: &[u8],
     scoped_atom_ids: &std::collections::HashSet<String>,
@@ -223,7 +169,7 @@ fn select_chunks_by_centroid(
 }
 
 /// Fallback: select chunks by insertion order up to the token budget.
-fn select_chunks_unranked(
+pub(crate) fn select_chunks_unranked(
     conn: &Connection,
     placeholders: &str,
     all_tag_ids: &[String],
@@ -289,86 +235,8 @@ async fn generate_wiki_content(
     .await
 }
 
-/// Prepare data for wiki article update (sync, needs db connection).
-///
-/// Finds atoms added since the last update, then ranks their chunks by centroid
-/// similarity (same as generation) to stay within the token budget.
-fn prepare_wiki_update(
-    conn: &Connection,
-    tag_id: &str,
-    _tag_name: &str,
-    existing_article: &WikiArticle,
-    existing_citations: &[WikiCitation],
-    max_source_tokens: usize,
-) -> Result<Option<WikiUpdateInput>, String> {
-    let last_update = &existing_article.updated_at;
-
-    // Get atoms added after the last update
-    let mut new_atom_stmt = conn
-        .prepare(
-            "SELECT DISTINCT a.id FROM atoms a
-             INNER JOIN atom_tags at ON a.id = at.atom_id
-             WHERE at.tag_id = ?1 AND a.created_at > ?2",
-        )
-        .map_err(|e| format!("Failed to prepare new atoms query: {}", e))?;
-
-    let new_atom_ids: Vec<String> = new_atom_stmt
-        .query_map(rusqlite::params![tag_id, last_update], |row| row.get(0))
-        .map_err(|e| format!("Failed to query new atoms: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect new atom IDs: {}", e))?;
-
-    if new_atom_ids.is_empty() {
-        return Ok(None); // No new atoms
-    }
-
-    let new_atom_id_set: std::collections::HashSet<String> = new_atom_ids.into_iter().collect();
-
-    // Try centroid-ranked selection scoped to new atoms only
-    let centroid_blob: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT embedding FROM tag_embeddings WHERE tag_id = ?1",
-            [tag_id],
-            |row| row.get(0),
-        )
-        .ok();
-
-    let new_chunks = if let Some(ref centroid) = centroid_blob {
-        select_chunks_by_centroid(conn, centroid, &new_atom_id_set, max_source_tokens)?
-    } else {
-        // Fallback: fetch by insertion order with token budget
-        eprintln!("[wiki/centroid] No centroid for tag {}, falling back to unranked update chunk selection", tag_id);
-        select_new_chunks_unranked(conn, &new_atom_id_set, max_source_tokens)?
-    };
-
-    if new_chunks.is_empty() {
-        return Ok(None);
-    }
-
-    eprintln!(
-        "[wiki/centroid] Update: {} new chunks from {} new atoms",
-        new_chunks.len(), new_atom_id_set.len()
-    );
-
-    let atom_count: i32 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM atom_tags WHERE tag_id = ?1",
-            [tag_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to count atoms: {}", e))?;
-
-    Ok(Some(WikiUpdateInput {
-        new_chunks,
-        existing_article: existing_article.clone(),
-        existing_citations: existing_citations.to_vec(),
-        atom_count,
-        tag_id: tag_id.to_string(),
-    }))
-}
-
 /// Fallback for update: select new chunks by insertion order up to the token budget.
-fn select_new_chunks_unranked(
+pub(crate) fn select_new_chunks_unranked(
     conn: &Connection,
     new_atom_ids: &std::collections::HashSet<String>,
     max_source_tokens: usize,

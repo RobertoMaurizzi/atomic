@@ -87,6 +87,50 @@ pub struct ChunkResult {
 /// RRF constant - standard value that prevents high ranks from dominating
 const RRF_K: f32 = 60.0;
 
+/// Merge semantic and keyword search results using Reciprocal Rank Fusion.
+/// Deduplicates by atom_id, keeping the highest combined score.
+/// Used by the Postgres search path where results are already `SemanticSearchResult`.
+pub fn merge_search_results_rrf(
+    semantic: Vec<SemanticSearchResult>,
+    keyword: Vec<SemanticSearchResult>,
+    limit: i32,
+) -> Vec<SemanticSearchResult> {
+    let mut scores: HashMap<String, (f32, SemanticSearchResult)> = HashMap::new();
+
+    for (rank, result) in semantic.iter().enumerate() {
+        let rrf = 1.0 / (RRF_K + (rank + 1) as f32);
+        scores
+            .entry(result.atom.atom.id.clone())
+            .and_modify(|(s, _)| *s += rrf)
+            .or_insert((rrf, result.clone()));
+    }
+
+    for (rank, result) in keyword.iter().enumerate() {
+        let rrf = 1.0 / (RRF_K + (rank + 1) as f32);
+        scores
+            .entry(result.atom.atom.id.clone())
+            .and_modify(|(s, _)| *s += rrf)
+            .or_insert((rrf, result.clone()));
+    }
+
+    let max_rrf = 2.0 / (RRF_K + 1.0);
+    let mut combined: Vec<SemanticSearchResult> = scores
+        .into_values()
+        .map(|(score, mut result)| {
+            result.similarity_score = (score / max_rrf).clamp(0.0, 1.0);
+            result
+        })
+        .collect();
+
+    combined.sort_by(|a, b| {
+        b.similarity_score
+            .partial_cmp(&a.similarity_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    combined.truncate(limit as usize);
+    combined
+}
+
 /// Escape special characters for FTS5 MATCH query
 /// Wraps each word in quotes to treat them as literal terms
 fn escape_fts5_query(query: &str) -> String {

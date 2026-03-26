@@ -75,6 +75,22 @@ pub trait AtomStore: Send + Sync {
 
     /// Get all atoms with their average embedding vectors.
     async fn get_atoms_with_embeddings(&self) -> StorageResult<Vec<AtomWithEmbedding>>;
+
+    /// Get just the tag IDs for an atom (lightweight, no full atom fetch).
+    async fn get_atom_tag_ids(&self, atom_id: &str) -> StorageResult<Vec<String>>;
+
+    /// Get just the content for an atom (lightweight, for embedding pipeline).
+    async fn get_atom_content(&self, atom_id: &str) -> StorageResult<Option<String>>;
+
+    /// Check which source URLs already exist in the database.
+    /// Returns the set of URLs that are already present.
+    async fn check_existing_source_urls(&self, urls: &[String]) -> StorageResult<std::collections::HashSet<String>>;
+
+    /// Check if a specific source URL already exists.
+    async fn source_url_exists(&self, url: &str) -> StorageResult<bool>;
+
+    /// Count atoms with pending embedding status.
+    async fn count_pending_embeddings(&self) -> StorageResult<i32>;
 }
 
 // ==================== Tag Storage ====================
@@ -130,6 +146,49 @@ pub trait TagStore: Send + Sync {
         &self,
         merges: &[TagMerge],
     ) -> StorageResult<CompactionResult>;
+
+    /// Get or create a tag by name, optionally under a parent name.
+    /// Returns the tag ID.
+    async fn get_or_create_tag(
+        &self,
+        name: &str,
+        parent_name: Option<&str>,
+    ) -> StorageResult<String>;
+
+    /// Link tags to an atom (ignores duplicates).
+    async fn link_tags_to_atom(
+        &self,
+        atom_id: &str,
+        tag_ids: &[String],
+    ) -> StorageResult<()>;
+
+    /// Get the tag tree formatted as JSON for LLM tag extraction.
+    async fn get_tag_tree_for_llm(&self) -> StorageResult<String>;
+
+    /// Compute tag centroid embeddings for a batch of tags from their atoms' embeddings.
+    async fn compute_tag_centroids_batch(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<()>;
+
+    /// Clean up orphaned parent tags (parents with no children and no atoms).
+    async fn cleanup_orphaned_parents(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<()>;
+
+    /// Get all tag IDs in a hierarchy (the tag itself + all descendants).
+    /// Uses a recursive traversal of the tag parent_id tree.
+    async fn get_tag_hierarchy(
+        &self,
+        tag_id: &str,
+    ) -> StorageResult<Vec<String>>;
+
+    /// Count distinct atoms that have any of the given tags.
+    async fn count_atoms_with_tags(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<i32>;
 }
 
 // ==================== Chunk/Embedding Storage ====================
@@ -202,6 +261,40 @@ pub trait ChunkStore: Send + Sync {
 
     /// Check sqlite-vec or equivalent vector extension version.
     async fn check_vector_extension(&self) -> StorageResult<String>;
+
+    /// Atomically claim pending atoms for embedding: sets status to 'processing'
+    /// and returns (atom_id, content) pairs. Ensures no double-processing.
+    async fn claim_pending_embeddings(&self, limit: i32) -> StorageResult<Vec<(String, String)>>;
+
+    /// Delete chunks for multiple atoms in batch.
+    async fn delete_chunks_batch(&self, atom_ids: &[String]) -> StorageResult<()>;
+
+    /// Compute semantic edges for a single atom against all other embedded atoms.
+    async fn compute_semantic_edges_for_atom(
+        &self,
+        atom_id: &str,
+        threshold: f32,
+        max_edges: i32,
+    ) -> StorageResult<i32>;
+
+    /// Rebuild the full-text search index (SQLite: FTS5 rebuild, Postgres: no-op since tsvector is auto-maintained).
+    async fn rebuild_fts_index(&self) -> StorageResult<()>;
+
+    /// Atomically claim atoms that need tagging: sets tagging_status to 'processing'
+    /// for atoms with embedding_status='complete' and tagging_status='pending'.
+    /// Returns the atom IDs that were claimed.
+    async fn claim_pending_tagging(&self) -> StorageResult<Vec<String>>;
+
+    /// Get the current embedding dimension from the vector index.
+    /// Returns None if the vector index doesn't exist or dimension can't be determined.
+    async fn get_embedding_dimension(&self) -> StorageResult<Option<usize>>;
+
+    /// Drop and recreate the vector index with a new dimension, resetting all embedding state.
+    async fn recreate_vector_index(&self, dimension: usize) -> StorageResult<()>;
+
+    /// Claim pending/processing atoms for re-embedding after dimension change.
+    /// Sets status to 'processing' and returns (atom_id, content) pairs.
+    async fn claim_pending_reembedding(&self) -> StorageResult<Vec<(String, String)>>;
 }
 
 // ==================== Search Storage ====================
@@ -233,6 +326,25 @@ pub trait SearchStore: Send + Sync {
         limit: i32,
         threshold: f32,
     ) -> StorageResult<Vec<SimilarAtomResult>>;
+
+    /// Search for chunks (not deduplicated by atom) using keyword search.
+    /// Returns individual chunk results with scores. Used by wiki agentic research.
+    async fn keyword_search_chunks(
+        &self,
+        query: &str,
+        limit: i32,
+        scope_tag_ids: &[String],
+    ) -> StorageResult<Vec<ChunkSearchResult>>;
+
+    /// Search for chunks using vector similarity.
+    /// Returns individual chunk results with scores. Used by wiki agentic research.
+    async fn vector_search_chunks(
+        &self,
+        query_embedding: &[f32],
+        limit: i32,
+        threshold: f32,
+        scope_tag_ids: &[String],
+    ) -> StorageResult<Vec<ChunkSearchResult>>;
 }
 
 // ==================== Chat Storage ====================
@@ -314,6 +426,18 @@ pub trait ChatStore: Send + Sync {
         message_id: &str,
         citations: &[ChatCitation],
     ) -> StorageResult<()>;
+
+    /// Get the tag IDs that scope a conversation.
+    async fn get_scope_tag_ids(
+        &self,
+        conversation_id: &str,
+    ) -> StorageResult<Vec<String>>;
+
+    /// Get a human-readable scope description for the system prompt.
+    async fn get_scope_description(
+        &self,
+        tag_ids: &[String],
+    ) -> StorageResult<String>;
 }
 
 // ==================== Wiki Storage ====================
@@ -341,6 +465,15 @@ pub trait WikiStore: Send + Sync {
         citations: &[WikiCitation],
         atom_count: i32,
     ) -> StorageResult<WikiArticleWithCitations>;
+
+    /// Save or update a wiki article with citations and cross-reference links.
+    /// This is the full-fidelity save used by wiki generation (includes links).
+    async fn save_wiki_with_links(
+        &self,
+        article: &WikiArticle,
+        citations: &[WikiCitation],
+        links: &[WikiLink],
+    ) -> StorageResult<()>;
 
     /// Delete a wiki article and its citations.
     async fn delete_wiki(&self, tag_id: &str) -> StorageResult<()>;
@@ -371,6 +504,27 @@ pub trait WikiStore: Send + Sync {
         &self,
         limit: i32,
     ) -> StorageResult<Vec<SuggestedArticle>>;
+
+    /// Select chunks for wiki article generation, ranked by centroid similarity.
+    ///
+    /// Returns (chunks, atom_count) for the tag hierarchy. Uses centroid embedding
+    /// for ranked retrieval if available, falls back to insertion order.
+    async fn get_wiki_source_chunks(
+        &self,
+        tag_id: &str,
+        max_source_tokens: usize,
+    ) -> StorageResult<(Vec<ChunkWithContext>, i32)>;
+
+    /// Select chunks for wiki article update (new atoms since last update).
+    ///
+    /// Returns None if no new atoms have been added since `last_update`.
+    /// Otherwise returns (new_chunks, atom_count).
+    async fn get_wiki_update_chunks(
+        &self,
+        tag_id: &str,
+        last_update: &str,
+        max_source_tokens: usize,
+    ) -> StorageResult<Option<(Vec<ChunkWithContext>, i32)>>;
 }
 
 // ==================== Feed Storage ====================
@@ -439,6 +593,14 @@ pub trait FeedStore: Send + Sync {
         guid: &str,
         reason: &str,
     ) -> StorageResult<()>;
+
+    /// Backfill feed metadata (title, site_url) using COALESCE to avoid overwriting existing values.
+    async fn backfill_feed_metadata(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        site_url: Option<&str>,
+    ) -> StorageResult<()>;
 }
 
 // ==================== Clustering Storage ====================
@@ -467,6 +629,54 @@ pub trait ClusterStore: Send + Sync {
     ) -> StorageResult<CanvasLevel>;
 }
 
+// ==================== Settings Storage ====================
+
+/// Storage operations for key-value settings.
+#[async_trait]
+pub trait SettingsStore: Send + Sync {
+    /// Get all settings as a key-value map.
+    async fn get_all_settings(&self) -> StorageResult<std::collections::HashMap<String, String>>;
+
+    /// Get a single setting by key.
+    async fn get_setting(&self, key: &str) -> StorageResult<Option<String>>;
+
+    /// Set a setting value (upsert).
+    async fn set_setting(&self, key: &str, value: &str) -> StorageResult<()>;
+}
+
+// ==================== Token Storage ====================
+
+/// Storage operations for API tokens.
+#[async_trait]
+pub trait TokenStore: Send + Sync {
+    /// Create a new named API token. Returns (metadata, raw_token).
+    async fn create_api_token(
+        &self,
+        name: &str,
+    ) -> StorageResult<(crate::tokens::ApiTokenInfo, String)>;
+
+    /// List all API tokens (metadata only).
+    async fn list_api_tokens(&self) -> StorageResult<Vec<crate::tokens::ApiTokenInfo>>;
+
+    /// Verify a raw API token. Returns token info if valid and not revoked.
+    async fn verify_api_token(
+        &self,
+        raw_token: &str,
+    ) -> StorageResult<Option<crate::tokens::ApiTokenInfo>>;
+
+    /// Revoke an API token by ID.
+    async fn revoke_api_token(&self, id: &str) -> StorageResult<()>;
+
+    /// Update the last_used_at timestamp for a token.
+    async fn update_token_last_used(&self, id: &str) -> StorageResult<()>;
+
+    /// Migrate legacy server_auth_token to API tokens table.
+    async fn migrate_legacy_token(&self) -> StorageResult<bool>;
+
+    /// Ensure at least one token exists. Creates a "default" token if none exist.
+    async fn ensure_default_token(&self) -> StorageResult<Option<(crate::tokens::ApiTokenInfo, String)>>;
+}
+
 // ==================== Supertrait ====================
 
 /// Combined storage trait. Every storage backend must implement all sub-traits.
@@ -482,6 +692,8 @@ pub trait Storage:
     + WikiStore
     + FeedStore
     + ClusterStore
+    + SettingsStore
+    + TokenStore
     + Send
     + Sync
 {

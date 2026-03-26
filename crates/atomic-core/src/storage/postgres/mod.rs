@@ -20,6 +20,8 @@ mod wiki;
 mod feeds;
 #[cfg(feature = "postgres")]
 mod clusters;
+#[cfg(feature = "postgres")]
+mod settings;
 
 #[cfg(feature = "postgres")]
 use crate::error::AtomicCoreError;

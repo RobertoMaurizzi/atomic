@@ -270,6 +270,18 @@ pub struct ChunkWithContext {
     pub similarity_score: f32,
 }
 
+/// Individual chunk search result (not deduplicated by atom).
+/// Used by wiki agentic research and other chunk-level search needs.
+#[derive(Debug, Clone)]
+pub struct ChunkSearchResult {
+    pub chunk_id: String,
+    pub atom_id: String,
+    pub content: String,
+    pub chunk_index: i32,
+    /// Normalized score (0.0-1.0), higher is better
+    pub score: f32,
+}
+
 /// Position of an atom on the canvas
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

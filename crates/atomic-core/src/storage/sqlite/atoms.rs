@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::SqliteStorage;
 use crate::error::AtomicCoreError;
 use crate::models::*;
@@ -676,6 +678,28 @@ impl SqliteStorage {
         Ok(())
     }
 
+    pub(crate) fn get_atom_tag_ids_impl(&self, atom_id: &str) -> StorageResult<Vec<String>> {
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare("SELECT tag_id FROM atom_tags WHERE atom_id = ?1")?;
+        let ids = stmt
+            .query_map([atom_id], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+
+    pub(crate) fn get_atom_content_impl(&self, atom_id: &str) -> StorageResult<Option<String>> {
+        let conn = self.db.read_conn()?;
+        match conn.query_row(
+            "SELECT content FROM atoms WHERE id = ?1",
+            [atom_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(content) => Ok(Some(content)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(AtomicCoreError::Database(e)),
+        }
+    }
+
     pub(crate) fn get_atoms_with_embeddings_impl(
         &self,
     ) -> StorageResult<Vec<AtomWithEmbedding>> {
@@ -708,6 +732,55 @@ impl SqliteStorage {
             .collect();
 
         Ok(result)
+    }
+
+    pub(crate) fn check_existing_source_urls_sync(
+        &self,
+        urls: &[String],
+    ) -> StorageResult<HashSet<String>> {
+        if urls.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let conn = self.db.read_conn()?;
+        let placeholders: String = urls.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT source_url FROM atoms WHERE source_url IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(urls.iter()),
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut result = HashSet::new();
+        for row in rows {
+            result.insert(row?);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn source_url_exists_sync(&self, url: &str) -> StorageResult<bool> {
+        let conn = self.db.read_conn()?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM atoms WHERE source_url = ?1)",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        Ok(exists)
+    }
+
+    pub(crate) fn count_pending_embeddings_sync(&self) -> StorageResult<i32> {
+        let conn = self.db.read_conn()?;
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM atoms WHERE embedding_status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(count)
     }
 }
 
@@ -776,5 +849,25 @@ impl AtomStore for SqliteStorage {
 
     async fn get_atoms_with_embeddings(&self) -> StorageResult<Vec<AtomWithEmbedding>> {
         self.get_atoms_with_embeddings_impl()
+    }
+
+    async fn get_atom_tag_ids(&self, atom_id: &str) -> StorageResult<Vec<String>> {
+        self.get_atom_tag_ids_impl(atom_id)
+    }
+
+    async fn get_atom_content(&self, atom_id: &str) -> StorageResult<Option<String>> {
+        self.get_atom_content_impl(atom_id)
+    }
+
+    async fn check_existing_source_urls(&self, urls: &[String]) -> StorageResult<HashSet<String>> {
+        self.check_existing_source_urls_sync(urls)
+    }
+
+    async fn source_url_exists(&self, url: &str) -> StorageResult<bool> {
+        self.source_url_exists_sync(url)
+    }
+
+    async fn count_pending_embeddings(&self) -> StorageResult<i32> {
+        self.count_pending_embeddings_sync()
     }
 }

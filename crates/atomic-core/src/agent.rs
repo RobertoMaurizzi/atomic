@@ -4,14 +4,13 @@
 //! retrieves atoms, and generates responses with citations.
 //! Uses a callback-based event system (same pattern as EmbeddingEvent).
 
-use crate::chat;
-use crate::db::Database;
 use crate::models::{ChatCitation, ChatMessage, ChatMessageWithContext, ChatToolCall, SemanticSearchResult};
 use crate::chunking::count_tokens;
 use crate::providers::traits::LlmConfig;
-use crate::providers::types::{GenerationParams, Message, StreamDelta, ToolDefinition};
+use crate::providers::types::{GenerationParams, Message, MessageRole, StreamDelta, ToolDefinition};
 use crate::providers::{create_streaming_llm_provider, ProviderConfig, ProviderType};
 use crate::search::{SearchMode, SearchOptions};
+use crate::storage::StorageBackend;
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::json;
@@ -98,33 +97,47 @@ fn get_tools() -> Vec<ToolDefinition> {
 // ==================== Tool Execution ====================
 
 async fn execute_search_atoms(
-    db: &Database,
+    storage: &StorageBackend,
     query: &str,
     limit: i32,
     scope_tag_ids: &[String],
     external_settings: Option<std::collections::HashMap<String, String>>,
 ) -> Result<Vec<SemanticSearchResult>, String> {
-    let options = SearchOptions::new(query, SearchMode::Hybrid, limit)
-        .with_threshold(0.3)
-        .with_scope(scope_tag_ids.to_vec());
-    crate::search::search_atoms_with_settings(db, options, external_settings).await
+    // Try SQLite path first (uses full search module with settings resolution)
+    if let Some(sqlite) = storage.as_sqlite() {
+        let options = SearchOptions::new(query, SearchMode::Hybrid, limit)
+            .with_threshold(0.3)
+            .with_scope(scope_tag_ids.to_vec());
+        return crate::search::search_atoms_with_settings(&sqlite.db, options, external_settings).await;
+    }
+
+    // Postgres path: use storage dispatch methods
+    let settings = match external_settings {
+        Some(s) => s,
+        None => storage.get_all_settings_sync().map_err(|e| e.to_string())?,
+    };
+    let config = ProviderConfig::from_settings(&settings);
+    let tag_id = scope_tag_ids.first().map(|s| s.as_str());
+
+    // Generate query embedding
+    let provider = crate::providers::get_embedding_provider(&config)
+        .map_err(|e| e.to_string())?;
+    let embed_config = crate::providers::EmbeddingConfig::new(config.embedding_model());
+    let embeddings = provider.embed_batch(&[query.to_string()], &embed_config)
+        .await.map_err(|e| e.to_string())?;
+
+    let keyword = storage.keyword_search_sync(query, limit * 2, tag_id)
+        .map_err(|e| e.to_string())?;
+    let semantic = if !embeddings.is_empty() && !embeddings[0].is_empty() {
+        storage.vector_search_sync(&embeddings[0], limit * 2, 0.3, tag_id)
+            .map_err(|e| e.to_string())?
+    } else { vec![] };
+
+    Ok(crate::search::merge_search_results_rrf(semantic, keyword, limit))
 }
 
-fn execute_get_atom(db: &Database, atom_id: &str) -> Result<Option<String>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    conn.query_row(
-        "SELECT content FROM atoms WHERE id = ?1",
-        [atom_id],
-        |row| row.get::<_, String>(0),
-    )
-    .map(Some)
-    .or_else(|e| {
-        if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
-            Ok(None)
-        } else {
-            Err(format!("Failed to get atom: {}", e))
-        }
-    })
+fn execute_get_atom(storage: &StorageBackend, atom_id: &str) -> Result<Option<String>, String> {
+    storage.get_atom_content_impl(atom_id).map_err(|e| e.to_string())
 }
 
 // ==================== System Prompt ====================
@@ -181,7 +194,6 @@ struct MessageGroup {
 /// An assistant message with tool_calls and its subsequent tool-result messages
 /// form one group. Everything else is its own group.
 fn group_messages(messages: &[Message], message_tokens: &[usize]) -> Vec<MessageGroup> {
-    use crate::providers::types::MessageRole;
     let mut groups = Vec::new();
     let mut i = 0;
     while i < messages.len() {
@@ -265,6 +277,30 @@ fn truncate_messages_to_context(messages: Vec<Message>, context_length: Option<u
     result
 }
 
+// ==================== Helper: Convert stored messages to provider format ====================
+
+/// Convert ChatMessage models from storage into provider Message format for the API.
+fn chat_messages_to_provider_messages(messages: Vec<crate::models::ChatMessageWithContext>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|m| {
+            let role = match m.message.role.as_str() {
+                "system" => MessageRole::System,
+                "assistant" => MessageRole::Assistant,
+                "tool" => MessageRole::Tool,
+                _ => MessageRole::User,
+            };
+            Message {
+                role,
+                content: Some(m.message.content),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }
+        })
+        .collect()
+}
+
 // ==================== Agent Loop ====================
 
 struct AgentContext {
@@ -277,7 +313,7 @@ struct AgentContext {
 
 async fn run_agent_loop<F>(
     on_event: &F,
-    db: Arc<Database>,
+    storage: StorageBackend,
     provider_config: ProviderConfig,
     model: String,
     mut ctx: AgentContext,
@@ -364,7 +400,7 @@ where
                     "search_atoms" => {
                         let query = tool_args["query"].as_str().unwrap_or("");
                         let limit = tool_args["limit"].as_i64().unwrap_or(5) as i32;
-                        match execute_search_atoms(&db, query, limit, &ctx.scope_tag_ids, external_settings.clone()).await {
+                        match execute_search_atoms(&storage, query, limit, &ctx.scope_tag_ids, external_settings.clone()).await {
                             Ok(results) => {
                                 let count = results.len() as i32;
                                 for result in results.iter() {
@@ -395,7 +431,7 @@ where
                     }
                     "get_atom" => {
                         let atom_id = tool_args["atom_id"].as_str().unwrap_or("");
-                        match execute_get_atom(&db, atom_id) {
+                        match execute_get_atom(&storage, atom_id) {
                             Ok(Some(content)) => (content, 1),
                             Ok(None) => ("Atom not found".to_string(), 0),
                             Err(e) => (format!("Error: {}", e), 0),
@@ -474,7 +510,7 @@ where
 ///
 /// Returns the final assistant message with tool calls and citations.
 pub async fn send_chat_message<F>(
-    db: Arc<Database>,
+    storage: StorageBackend,
     conversation_id: &str,
     content: &str,
     on_event: F,
@@ -482,12 +518,12 @@ pub async fn send_chat_message<F>(
 where
     F: Fn(ChatEvent) + Send + Sync,
 {
-    send_chat_message_with_settings(db, conversation_id, content, on_event, None).await
+    send_chat_message_with_settings(storage, conversation_id, content, on_event, None).await
 }
 
 /// Like `send_chat_message` but with externally-provided settings (from registry).
 pub async fn send_chat_message_with_settings<F>(
-    db: Arc<Database>,
+    storage: StorageBackend,
     conversation_id: &str,
     content: &str,
     on_event: F,
@@ -496,12 +532,11 @@ pub async fn send_chat_message_with_settings<F>(
 where
     F: Fn(ChatEvent) + Send + Sync,
 {
-    // Resolve settings (from registry if provided, otherwise from data db)
+    // Resolve settings (from registry if provided, otherwise from storage)
     let settings_map = match external_settings {
         Some(s) => s,
         None => {
-            let conn = db.conn.lock().map_err(|e| e.to_string())?;
-            crate::settings::get_all_settings(&conn)
+            storage.get_all_settings_sync()
                 .map_err(|e| e.to_string())?
         }
     };
@@ -531,21 +566,21 @@ where
     };
 
     // Save user message
-    {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        chat::save_message(&conn, conversation_id, "user", content)
-            .map_err(|e| e.to_string())?;
-    }
+    storage.save_message_sync(conversation_id, "user", content)
+        .map_err(|e| e.to_string())?;
 
     // Get conversation context
-    let (messages, scope_tag_ids, scope_description) = {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        let messages = chat::get_conversation_messages(&conn, conversation_id)
-            .map_err(|e| e.to_string())?;
-        let scope_tag_ids = chat::get_scope_tag_ids(&conn, conversation_id)
-            .map_err(|e| e.to_string())?;
-        let scope_description = chat::get_scope_description(&conn, &scope_tag_ids);
-        (messages, scope_tag_ids, scope_description)
+    let scope_tag_ids = storage.get_scope_tag_ids_sync(conversation_id)
+        .map_err(|e| e.to_string())?;
+    let scope_description = storage.get_scope_description_sync(&scope_tag_ids)
+        .map_err(|e| e.to_string())?;
+
+    // Get conversation messages via get_conversation_sync and convert to provider format
+    let conversation = storage.get_conversation_sync(conversation_id)
+        .map_err(|e| e.to_string())?;
+    let messages = match conversation {
+        Some(conv) => chat_messages_to_provider_messages(conv.messages),
+        None => Vec::new(),
     };
 
     // Build message history for API
@@ -564,36 +599,28 @@ where
         tool_calls_record: Vec::new(),
     };
 
-    // Need a separate DB connection for the async agent loop
-    // (the main connection's mutex can't be held across await points)
-    let agent_db = Arc::new(
-        Database::open(&db.db_path).map_err(|e| format!("Failed to create agent DB connection: {}", e))?,
-    );
-
-    // Run agent loop
+    // Run agent loop (storage is Clone, so no separate connection needed)
     let mut result =
-        run_agent_loop(&on_event, agent_db, provider_config, model, ctx, Some(settings_map)).await?;
+        run_agent_loop(&on_event, storage.clone(), provider_config, model, ctx, Some(settings_map)).await?;
 
     // Save assistant message
     {
-        let conn = db.conn.lock().map_err(|e| e.to_string())?;
-        let (msg_id, msg_idx) =
-            chat::save_message(&conn, conversation_id, "assistant", &result.message.content)
-                .map_err(|e| e.to_string())?;
+        let saved_msg = storage.save_message_sync(conversation_id, "assistant", &result.message.content)
+            .map_err(|e| e.to_string())?;
 
-        result.message.id = msg_id.clone();
-        result.message.message_index = msg_idx;
+        result.message.id = saved_msg.id.clone();
+        result.message.message_index = saved_msg.message_index;
 
         for tool_call in &mut result.tool_calls {
-            tool_call.message_id = msg_id.clone();
+            tool_call.message_id = saved_msg.id.clone();
         }
-        chat::save_tool_calls(&conn, &msg_id, &result.tool_calls)
+        storage.save_tool_calls_sync(&saved_msg.id, &result.tool_calls)
             .map_err(|e| e.to_string())?;
 
         for citation in &mut result.citations {
-            citation.message_id = msg_id.clone();
+            citation.message_id = saved_msg.id.clone();
         }
-        chat::save_citations(&conn, &msg_id, &result.citations)
+        storage.save_citations_sync(&saved_msg.id, &result.citations)
             .map_err(|e| e.to_string())?;
     }
 
