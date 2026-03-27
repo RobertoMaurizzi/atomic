@@ -892,16 +892,15 @@ impl AtomStore for PostgresStorage {
         // In Postgres with pgvector, embeddings are stored as vector type.
         // We average chunk embeddings per atom.
         let embedding_rows: Vec<(String, Vec<f32>)> = sqlx::query_as(
-            "SELECT ac.atom_id, avg(vc.embedding)::real[] as avg_embedding
-             FROM atom_chunks ac
-             JOIN vec_chunks vc ON vc.chunk_id = ac.id
-             WHERE ac.db_id = $1
-             GROUP BY ac.atom_id",
+            "SELECT atom_id, avg(embedding)::real[] as avg_embedding
+             FROM atom_chunks
+             WHERE embedding IS NOT NULL AND db_id = $1
+             GROUP BY atom_id",
         )
         .bind(&self.db_id)
         .fetch_all(&self.pool)
         .await
-        .unwrap_or_default();
+        .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
         let mut embedding_map: std::collections::HashMap<String, Vec<f32>> =
             std::collections::HashMap::new();
