@@ -60,7 +60,7 @@ pub fn get_conversation_summary(
             |row| {
                 let content: String = row.get(0)?;
                 Ok(if content.len() > 100 {
-                    format!("{}...", &content[..100])
+                    { let mut e = 100; while e > 0 && !content.is_char_boundary(e) { e -= 1; } format!("{}...", &content[..e]) }
                 } else {
                     content
                 })

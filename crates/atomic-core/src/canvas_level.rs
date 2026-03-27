@@ -1497,7 +1497,9 @@ fn snippet_label(content: &str) -> String {
     let first_line = content.lines().next().unwrap_or(content);
     let trimmed = first_line.trim().trim_start_matches('#').trim();
     if trimmed.len() > 60 {
-        format!("{}...", &trimmed[..57])
+        let mut end = 57;
+        while end > 0 && !trimmed.is_char_boundary(end) { end -= 1; }
+        format!("{}...", &trimmed[..end])
     } else if trimmed.is_empty() {
         "Empty".to_string()
     } else {

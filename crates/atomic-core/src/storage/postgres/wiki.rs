@@ -233,8 +233,12 @@ impl WikiStore for PostgresStorage {
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
         }
 
-        // Insert wiki links
+        // Insert wiki links (skip links with no resolved target_tag_id)
         for link in links {
+            let target_tag_id = match &link.target_tag_id {
+                Some(id) => id,
+                None => continue, // Can't insert NULL into NOT NULL column
+            };
             sqlx::query(
                 "INSERT INTO wiki_links (id, source_article_id, link_text, target_tag_id, db_id)
                  VALUES ($1, $2, $3, $4, $5)",
@@ -242,7 +246,7 @@ impl WikiStore for PostgresStorage {
             .bind(&link.id)
             .bind(&article.id)
             .bind(&link.target_tag_name)
-            .bind(&link.target_tag_id)
+            .bind(target_tag_id)
             .bind(&self.db_id)
             .execute(&self.pool)
             .await
@@ -650,8 +654,8 @@ impl WikiStore for PostgresStorage {
                 t.id,
                 t.name,
                 t.atom_count,
-                COALESCE(lm.link_count, 0) as mention_count,
-                t.atom_count * 1.0 + COALESCE(lm.link_count, 0) * 3.0 as score
+                COALESCE(lm.link_count, 0)::BIGINT as mention_count,
+                (t.atom_count * 1.0 + COALESCE(lm.link_count, 0) * 3.0)::FLOAT8 as score
             FROM tags t
             LEFT JOIN link_mentions lm ON lm.tag_id = t.id
             WHERE t.parent_id IS NOT NULL

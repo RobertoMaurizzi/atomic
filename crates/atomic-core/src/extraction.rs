@@ -166,7 +166,12 @@ pub async fn extract_tags_from_content(
     // Truncate based on provider's context length
     let max_chars = max_tagging_chars(provider_config, tag_tree_json, model);
     let text = if content.len() > max_chars {
-        &content[..max_chars]
+        // Find the nearest char boundary at or before max_chars
+        let mut end = max_chars;
+        while end > 0 && !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        &content[..end]
     } else {
         content
     };

@@ -832,6 +832,8 @@ impl ChunkStore for PostgresStorage {
     }
 
     async fn recreate_vector_index(&self, dimension: usize) -> StorageResult<()> {
+        // Embedding model is a global setting — dimension change affects all databases.
+        // ALTER the column type globally, then reset ALL atoms for re-embedding.
         sqlx::query(&format!(
             "ALTER TABLE atom_chunks ALTER COLUMN embedding TYPE vector({})",
             dimension
@@ -839,23 +841,22 @@ impl ChunkStore for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| AtomicCoreError::DatabaseOperation(format!(
-            "Failed to recreate vector index: {}", e
+            "Failed to alter vector dimension: {}", e
         )))?;
 
-        sqlx::query("UPDATE atoms SET embedding_status = 'pending' WHERE db_id = $1")
-            .bind(&self.db_id)
+        // Delete all chunks (global — old dimension data is invalid)
+        sqlx::query("DELETE FROM atom_chunks")
             .execute(&self.pool)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        sqlx::query("UPDATE atoms SET tagging_status = 'skipped' WHERE db_id = $1")
-            .bind(&self.db_id)
+        // Reset all atoms across all databases for re-embedding
+        sqlx::query("UPDATE atoms SET embedding_status = 'pending'")
             .execute(&self.pool)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;
 
-        sqlx::query("DELETE FROM atom_chunks WHERE db_id = $1")
-            .bind(&self.db_id)
+        sqlx::query("UPDATE atoms SET tagging_status = 'skipped'")
             .execute(&self.pool)
             .await
             .map_err(|e| AtomicCoreError::DatabaseOperation(e.to_string()))?;

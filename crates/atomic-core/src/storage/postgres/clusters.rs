@@ -233,7 +233,12 @@ async fn load_semantic_edges_for_atoms(
 fn snippet_label(content: &str) -> String {
     let trimmed = content.trim();
     if trimmed.len() > 60 {
-        format!("{}...", &trimmed[..57])
+        // Find a valid char boundary at or before byte 57
+        let mut end = 57;
+        while end > 0 && !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &trimmed[..end])
     } else {
         trimmed.to_string()
     }

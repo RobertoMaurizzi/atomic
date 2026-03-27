@@ -66,7 +66,7 @@ async fn fetch_conversation_summary(
 
     let preview = last_message_preview.map(|content| {
         if content.len() > 100 {
-            format!("{}...", &content[..100])
+            { let mut e = 100; while e > 0 && !content.is_char_boundary(e) { e -= 1; } format!("{}...", &content[..e]) }
         } else {
             content
         }
@@ -196,7 +196,7 @@ async fn batch_fetch_conversation_summaries(
 
     for (conv_id, content) in preview_rows {
         let preview = if content.len() > 100 {
-            format!("{}...", &content[..100])
+            { let mut e = 100; while e > 0 && !content.is_char_boundary(e) { e -= 1; } format!("{}...", &content[..e]) }
         } else {
             content
         };
