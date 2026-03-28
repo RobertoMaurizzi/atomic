@@ -4,10 +4,7 @@ import type { AvailableModel, OllamaModel } from '../../lib/api';
 export type StepId =
   | 'welcome'
   | 'ai-provider'
-  | 'mcp-setup'
-  | 'mobile-setup'
-  | 'extension'
-  | 'data-loading'
+  | 'integrations'
   | 'tutorial';
 
 export interface OnboardingState {
@@ -243,9 +240,6 @@ export function useOnboardingState() {
 export const STEPS: { id: StepId; label: string; required: boolean }[] = [
   { id: 'welcome', label: 'Welcome', required: true },
   { id: 'ai-provider', label: 'AI Provider', required: true },
-  { id: 'mcp-setup', label: 'MCP', required: false },
-  { id: 'mobile-setup', label: 'Mobile', required: false },
-  { id: 'extension', label: 'Extension', required: false },
-  { id: 'data-loading', label: 'Data', required: false },
+  { id: 'integrations', label: 'Integrations', required: false },
   { id: 'tutorial', label: 'Tutorial', required: false },
 ];

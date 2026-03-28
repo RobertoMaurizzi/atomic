@@ -7,10 +7,7 @@ import { isDesktopApp, getTransport } from '../../lib/transport';
 
 import { WelcomeStep } from './steps/WelcomeStep';
 import { AIProviderStep } from './steps/AIProviderStep';
-import { McpSetupStep } from './steps/McpSetupStep';
-import { MobileSetupStep } from './steps/MobileSetupStep';
-import { ExtensionStep } from './steps/ExtensionStep';
-import { DataLoadingStep } from './steps/DataLoadingStep';
+import { IntegrationsStep } from './steps/IntegrationsStep';
 import { TutorialStep } from './steps/TutorialStep';
 
 interface OnboardingWizardProps {
@@ -131,14 +128,8 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         return <WelcomeStep state={state} dispatch={dispatch} onNext={handleNext} />;
       case 'ai-provider':
         return <AIProviderStep state={state} dispatch={dispatch} />;
-      case 'mcp-setup':
-        return <McpSetupStep />;
-      case 'mobile-setup':
-        return <MobileSetupStep state={state} dispatch={dispatch} />;
-      case 'extension':
-        return <ExtensionStep />;
-      case 'data-loading':
-        return <DataLoadingStep state={state} dispatch={dispatch} />;
+      case 'integrations':
+        return <IntegrationsStep state={state} dispatch={dispatch} />;
       case 'tutorial':
         return <TutorialStep state={state} dispatch={dispatch} />;
     }
