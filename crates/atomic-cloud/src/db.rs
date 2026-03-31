@@ -178,7 +178,7 @@ pub async fn get_instance_by_management_token(
     pool: &PgPool,
     token: &str,
 ) -> Result<Option<Instance>, CloudError> {
-    sqlx::query_as::<_, Instance>("SELECT * FROM instances WHERE management_token = $1")
+    sqlx::query_as::<_, Instance>("SELECT * FROM instances WHERE management_token = $1 AND status != 'destroyed'")
         .bind(token)
         .fetch_optional(pool)
         .await
@@ -217,15 +217,17 @@ pub async fn update_instance_fly_ids(
     instance_id: Uuid,
     fly_machine_id: &str,
     fly_volume_id: &str,
+    instance_auth_token: &str,
 ) -> Result<(), CloudError> {
     sqlx::query(
         r#"
-        UPDATE instances SET fly_machine_id = $1, fly_volume_id = $2, updated_at = now()
-        WHERE id = $3
+        UPDATE instances SET fly_machine_id = $1, fly_volume_id = $2, instance_auth_token = $3, updated_at = now()
+        WHERE id = $4
         "#,
     )
     .bind(fly_machine_id)
     .bind(fly_volume_id)
+    .bind(instance_auth_token)
     .bind(instance_id)
     .execute(pool)
     .await
@@ -299,6 +301,24 @@ pub async fn consume_magic_link(
     .map_err(CloudError::from)?;
 
     Ok(row.map(|r| r.0))
+}
+
+/// Check if a magic link was sent to this email within the last `seconds` seconds.
+pub async fn has_recent_magic_link(
+    pool: &PgPool,
+    email: &str,
+    seconds: i64,
+) -> Result<bool, CloudError> {
+    let row = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(*) FROM magic_links WHERE email = $1 AND created_at > now() - make_interval(secs => $2)",
+    )
+    .bind(email)
+    .bind(seconds as f64)
+    .fetch_one(pool)
+    .await
+    .map_err(CloudError::from)?;
+
+    Ok(row.0 > 0)
 }
 
 pub async fn get_customer_by_email(

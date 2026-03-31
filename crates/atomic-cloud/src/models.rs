@@ -37,6 +37,7 @@ pub struct Instance {
     pub status: String,
     pub server_version: Option<String>,
     pub management_token: String,
+    pub instance_auth_token: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

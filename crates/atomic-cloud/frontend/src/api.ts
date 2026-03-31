@@ -67,6 +67,13 @@ export async function exchangeSession(
   const resp = await fetch(
     `${API_BASE}/api/checkout/session?session_id=${encodeURIComponent(sessionId)}`
   );
+  if (resp.status === 202) {
+    return resp.json(); // Pending — webhook not processed yet
+  }
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({ error: resp.statusText }));
+    throw new Error(body.error || resp.statusText);
+  }
   return resp.json();
 }
 

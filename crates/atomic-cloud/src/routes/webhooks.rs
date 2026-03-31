@@ -172,7 +172,7 @@ async fn provision_instance(
         .await?;
 
     // Update instance with Fly IDs
-    crate::db::update_instance_fly_ids(db, instance_id, &machine.id, &volume.id).await?;
+    crate::db::update_instance_fly_ids(db, instance_id, &machine.id, &volume.id, &instance_auth_token).await?;
     crate::db::update_instance_status(db, instance_id, "running").await?;
 
     eprintln!("Provisioned {subdomain}: app={app_name}, machine={}, volume={}", machine.id, volume.id);

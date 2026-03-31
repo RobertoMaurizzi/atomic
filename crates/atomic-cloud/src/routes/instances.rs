@@ -42,7 +42,7 @@ pub async fn get_status(state: web::Data<CloudState>, req: HttpRequest) -> HttpR
         None
     };
 
-    let subdomain_url = format!("https://{}.{}", instance.subdomain, state.config.base_domain);
+    let subdomain_url = format!("https://{}.fly.dev", instance.fly_app_name);
     let mcp_url = format!("{}/mcp", subdomain_url);
 
     HttpResponse::Ok().json(serde_json::json!({
@@ -52,6 +52,7 @@ pub async fn get_status(state: web::Data<CloudState>, req: HttpRequest) -> HttpR
         "fly_state": fly_state,
         "subdomain_url": subdomain_url,
         "mcp_url": mcp_url,
+        "instance_auth_token": instance.instance_auth_token,
         "created_at": instance.created_at,
     }))
 }

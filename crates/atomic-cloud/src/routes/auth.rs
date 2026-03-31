@@ -23,6 +23,14 @@ pub async fn send_magic_link(
 ) -> HttpResponse {
     let email = body.email.trim().to_lowercase();
 
+    // Rate limit: one magic link per email per 60 seconds
+    if let Ok(true) = crate::db::has_recent_magic_link(&state.db, &email, 60).await {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "status": "sent",
+            "message": "If an account exists, a sign-in link has been sent"
+        }));
+    }
+
     // Always return success to avoid leaking whether an email exists
     let customer = match crate::db::get_customer_by_email(&state.db, &email).await {
         Ok(Some(c)) => c,
