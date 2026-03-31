@@ -126,17 +126,20 @@ async fn handle_checkout_completed(
     let image = state.config.atomic_image.clone();
     let region = state.config.fly_region.clone();
     let fly_org = state.config.fly_org.clone();
-    let base_domain = state.config.base_domain.clone();
     let instance_id = instance.id;
     let subdomain = subdomain.to_string();
 
     tokio::spawn(async move {
         if let Err(e) = provision_instance(
-            &fly, &db, &fly_app_name, &fly_org, &base_domain, &image, &region, instance_id, &subdomain,
+            &fly, &db, &fly_app_name, &fly_org, &image, &region, instance_id, &subdomain,
         )
         .await
         {
             eprintln!("Provisioning failed for {subdomain}: {e}");
+            // Clean up the Fly app to avoid blocking re-subscription
+            if let Err(cleanup_err) = fly.delete_app(&fly_app_name).await {
+                eprintln!("Failed to clean up Fly app {fly_app_name}: {cleanup_err}");
+            }
             let _ = crate::db::update_instance_status(&db, instance_id, "failed").await;
         }
     });
@@ -149,7 +152,6 @@ async fn provision_instance(
     db: &sqlx::PgPool,
     app_name: &str,
     org_slug: &str,
-    base_domain: &str,
     image: &str,
     region: &str,
     instance_id: uuid::Uuid,
@@ -163,12 +165,7 @@ async fn provision_instance(
     fly.allocate_ips(app_name).await?;
     eprintln!("Allocated IPs for {app_name}");
 
-    // Step 3: Add TLS certificate for the custom domain
-    let hostname = format!("{subdomain}.{base_domain}");
-    fly.add_certificate(app_name, &hostname).await?;
-    eprintln!("Added certificate for {hostname}");
-
-    // Step 4: Create volume
+    // Step 3: Create volume
     let volume_name = format!("{}_data", subdomain.replace('-', "_"));
     let volume = fly
         .create_volume(app_name, &volume_name, 3, region)
