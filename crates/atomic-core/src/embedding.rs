@@ -380,6 +380,16 @@ async fn process_tagging_only_inner(
     atom_id: &str,
     external_settings: Option<HashMap<String, String>>,
 ) -> Result<(Vec<String>, Vec<String>), String> {
+    // Respect atoms that were intentionally marked 'skipped' (e.g. by a
+    // dimension-change reset that preserves existing tags) or already
+    // 'complete'. Only 'pending'/'failed' atoms should actually run tagging.
+    let current_status = storage
+        .get_tagging_status_impl(atom_id)
+        .map_err(|e| e.to_string())?;
+    if current_status == "skipped" || current_status == "complete" {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
     // Set tagging status to processing
     storage.set_tagging_status_sync(atom_id, "processing")
         .map_err(|e| e.to_string())?;
