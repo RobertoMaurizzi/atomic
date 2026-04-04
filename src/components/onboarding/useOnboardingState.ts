@@ -182,6 +182,8 @@ function reducer(state: OnboardingState, action: OnboardingAction): OnboardingSt
       } else if (action.value === 'openrouter') {
         base.embeddingModel = 'openai/text-embedding-3-small';
         base.taggingModel = 'openai/gpt-4o-mini';
+        base.wikiModel = 'anthropic/claude-sonnet-4.6';
+        base.chatModel = 'anthropic/claude-sonnet-4.6';
       }
       return base;
     }
