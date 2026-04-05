@@ -128,7 +128,7 @@ export function WikiProposalDiff({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col flex-1 min-h-0">
       {/* Diff header */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-[var(--color-border)] bg-[var(--color-bg-card)]/40">
         <div className="flex flex-col">
@@ -180,10 +180,7 @@ export function WikiProposalDiff({
             );
           }
 
-          const lines =
-            block.kind === 'collapsed'
-              ? block.lines
-              : block.lines;
+          const lines = block.lines;
 
           return (
             <div key={blockIdx}>
