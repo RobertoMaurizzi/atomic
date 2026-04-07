@@ -1201,7 +1201,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           </p>
                           <textarea
                             value={wikiGenerationPrompt}
-                            onChange={(e) => { setWikiGenerationPrompt(e.target.value); autoSave('wiki_generation_prompt', e.target.value); }}
+                            onChange={(e) => setWikiGenerationPrompt(e.target.value)}
+                            onBlur={() => autoSave('wiki_generation_prompt', wikiGenerationPrompt)}
                             placeholder={"You are synthesizing a wiki article based on the user's personal knowledge base. Write a well-structured, informative article that summarizes what is known about the topic.\n\nGuidelines:\n- Use markdown formatting with ## for main sections and ### for subsections\n- Every factual claim MUST have a citation using [N] notation\n- Place citations immediately after the relevant statement\n- If sources contain contradictions, note them\n- Structure logically: overview first, then thematic sections\n- Keep tone informative and neutral\n- Do not invent information not present in the sources\n- When mentioning topics that have their own articles in the knowledge base, use [[Topic Name]] wiki-link notation to cross-reference them\n- Only use [[wiki links]] for topics listed in the EXISTING WIKI ARTICLES section provided\n- Do not force wiki links where they don't fit naturally"}
                             rows={8}
                             className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
@@ -1226,7 +1227,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           </p>
                           <textarea
                             value={wikiUpdatePrompt}
-                            onChange={(e) => { setWikiUpdatePrompt(e.target.value); autoSave('wiki_update_prompt', e.target.value); }}
+                            onChange={(e) => setWikiUpdatePrompt(e.target.value)}
+                            onBlur={() => autoSave('wiki_update_prompt', wikiUpdatePrompt)}
                             placeholder={"e.g. Write in a casual, conversational tone. Focus on practical implications rather than theory."}
                             rows={4}
                             className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"

@@ -55,10 +55,16 @@ export function WikiListViewer() {
     fetchAllArticles();
   }, [fetchAllArticles]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount — but only if wiki view mode isn't active,
+  // since WikiFullView shares the same store
+  const viewMode = useUIStore(s => s.viewMode);
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
   useEffect(() => {
     return () => {
-      reset();
+      if (viewModeRef.current !== 'wiki') {
+        reset();
+      }
     };
   }, [reset]);
 
