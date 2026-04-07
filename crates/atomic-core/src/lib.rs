@@ -846,6 +846,8 @@ impl AtomicCore {
             tag_id: tag_id.to_string(),
             tag_name: tag_name.to_string(),
             linkable_article_names,
+            custom_generation_prompt: settings_map.get("wiki_generation_prompt").cloned(),
+            custom_update_prompt: settings_map.get("wiki_update_prompt").cloned(),
         };
         Ok((strategy, ctx))
     }

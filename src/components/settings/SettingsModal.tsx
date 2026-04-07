@@ -290,6 +290,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [taggingModel, setTaggingModel] = useState('openai/gpt-4o-mini');
   const [wikiModel, setWikiModel] = useState('anthropic/claude-sonnet-4.6');
   const [wikiStrategy, setWikiStrategy] = useState('centroid');
+  const [wikiGenerationPrompt, setWikiGenerationPrompt] = useState('');
+  const [wikiUpdatePrompt, setWikiUpdatePrompt] = useState('');
   const [chatModel, setChatModel] = useState('anthropic/claude-sonnet-4.6');
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -673,6 +675,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setTaggingModel(settings.tagging_model || 'openai/gpt-4o-mini');
     setWikiModel(settings.wiki_model || 'anthropic/claude-sonnet-4.6');
     setWikiStrategy(settings.wiki_strategy || 'centroid');
+    setWikiGenerationPrompt(settings.wiki_generation_prompt || '');
+    setWikiUpdatePrompt(settings.wiki_update_prompt || '');
     setChatModel(settings.chat_model || 'anthropic/claude-sonnet-4.6');
     setOllamaHost(settings.ollama_host || 'http://127.0.0.1:11434');
     setOllamaEmbeddingModel(settings.ollama_embedding_model || 'nomic-embed-text');
@@ -1185,6 +1189,58 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                               { value: 'agentic', label: 'Agentic — AI agent searches and curates sources' },
                             ]}
                           />
+                        </div>
+
+                        {/* Wiki Generation Prompt */}
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                            Wiki Generation Prompt
+                          </label>
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            System prompt for generating new wiki articles. Leave empty to use the default.
+                          </p>
+                          <textarea
+                            value={wikiGenerationPrompt}
+                            onChange={(e) => setWikiGenerationPrompt(e.target.value)}
+                            onBlur={() => autoSave('wiki_generation_prompt', wikiGenerationPrompt)}
+                            placeholder={"You are synthesizing a wiki article based on the user's personal knowledge base. Write a well-structured, informative article that summarizes what is known about the topic.\n\nGuidelines:\n- Use markdown formatting with ## for main sections and ### for subsections\n- Every factual claim MUST have a citation using [N] notation\n- Place citations immediately after the relevant statement\n- If sources contain contradictions, note them\n- Structure logically: overview first, then thematic sections\n- Keep tone informative and neutral\n- Do not invent information not present in the sources\n- When mentioning topics that have their own articles in the knowledge base, use [[Topic Name]] wiki-link notation to cross-reference them\n- Only use [[wiki links]] for topics listed in the EXISTING WIKI ARTICLES section provided\n- Do not force wiki links where they don't fit naturally"}
+                            rows={8}
+                            className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                          />
+                          {wikiGenerationPrompt && (
+                            <button
+                              onClick={() => { setWikiGenerationPrompt(''); autoSave('wiki_generation_prompt', ''); }}
+                              className="text-xs text-[var(--color-accent)] hover:underline"
+                            >
+                              Reset to default
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Wiki Update Prompt */}
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-[var(--color-text-primary)]">
+                            Wiki Update Prompt
+                          </label>
+                          <p className="text-xs text-[var(--color-text-secondary)]">
+                            Custom instructions prepended to the update prompt. Use this to control tone, style, or focus. Leave empty to use the default.
+                          </p>
+                          <textarea
+                            value={wikiUpdatePrompt}
+                            onChange={(e) => setWikiUpdatePrompt(e.target.value)}
+                            onBlur={() => autoSave('wiki_update_prompt', wikiUpdatePrompt)}
+                            placeholder={"e.g. Write in a casual, conversational tone. Focus on practical implications rather than theory."}
+                            rows={4}
+                            className="w-full px-3 py-2 rounded-md bg-[var(--color-bg-main)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] font-mono resize-y placeholder:text-[var(--color-text-secondary)]/40"
+                          />
+                          {wikiUpdatePrompt && (
+                            <button
+                              onClick={() => { setWikiUpdatePrompt(''); autoSave('wiki_update_prompt', ''); }}
+                              className="text-xs text-[var(--color-accent)] hover:underline"
+                            >
+                              Reset to default
+                            </button>
+                          )}
                         </div>
 
                         {/* Chat Model */}

@@ -55,10 +55,16 @@ export function WikiListViewer() {
     fetchAllArticles();
   }, [fetchAllArticles]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount — but only if wiki view mode isn't active,
+  // since WikiFullView shares the same store
+  const viewMode = useUIStore(s => s.viewMode);
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
   useEffect(() => {
     return () => {
-      reset();
+      if (viewModeRef.current !== 'wiki') {
+        reset();
+      }
     };
   }, [reset]);
 
@@ -296,9 +302,6 @@ export function WikiListViewer() {
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg-panel)]">
       <WikiHeader
-        tagName={currentTagName || ''}
-        updatedAt={selectedVersion ? selectedVersion.created_at : currentArticle.article.updated_at}
-        sourceCount={displayCitations.length}
         newAtomsAvailable={selectedVersion ? 0 : (articleStatus?.new_atoms_available || 0)}
         onUpdate={handleUpdate}
         onRegenerate={handleRegenerate}
@@ -333,6 +336,9 @@ export function WikiListViewer() {
             citations={displayCitations}
             wikiLinks={selectedVersion ? [] : wikiLinks}
             relatedTags={selectedVersion ? [] : relatedTags}
+            tagName={currentTagName || ''}
+            updatedAt={selectedVersion ? selectedVersion.created_at : currentArticle.article.updated_at}
+            sourceCount={displayCitations.length}
             onViewAtom={handleViewAtom}
             onNavigateToArticle={(tagId, tagName) => openArticle(tagId, tagName)}
           />

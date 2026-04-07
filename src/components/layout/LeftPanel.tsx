@@ -52,21 +52,24 @@ export function LeftPanel() {
       <aside
         ref={panelRef}
         className={`
-          w-[250px] h-full bg-[var(--color-bg-panel)]/80 border-r border-[var(--color-border)] flex flex-col transition-all duration-200 backdrop-blur-xl z-10
-          max-md:fixed max-md:top-0 max-md:left-0 max-md:z-40 max-md:shadow-2xl
+          h-full bg-[var(--color-bg-panel)]/80 border-r border-[var(--color-border)] flex-col transition-all duration-300 ease-in-out backdrop-blur-xl z-10 overflow-hidden flex-shrink-0
+          max-md:fixed max-md:top-0 max-md:left-0 max-md:z-40 max-md:shadow-2xl max-md:w-[250px]
           ${leftPanelOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'}
-          ${leftPanelOpen ? '' : 'hidden md:flex'}
+          ${leftPanelOpen ? 'md:w-[250px] md:border-r' : 'md:w-0 md:border-r-0'}
+          hidden md:flex
         `}
       >
-        {/* Titlebar row with settings button */}
-        <div className={`h-[52px] flex items-center px-3 flex-shrink-0 gap-1 ${isTauri() ? 'pl-[78px]' : ''}`} data-tauri-drag-region>
-          <DatabaseSwitcher />
-          <SettingsButton onClick={() => setIsSettingsOpen(true)} />
-        </div>
+        <div className="w-[250px] h-full flex flex-col">
+          {/* Titlebar row with settings button */}
+          <div className={`h-[52px] flex items-center px-3 flex-shrink-0 gap-1 ${isTauri() ? 'pl-[78px]' : ''}`} data-tauri-drag-region>
+            <DatabaseSwitcher />
+            <SettingsButton onClick={() => setIsSettingsOpen(true)} />
+          </div>
 
-        {/* Tag Tree with integrated search */}
-        <div className="flex-1 overflow-hidden">
-          <TagTree />
+          {/* Tag Tree with integrated search */}
+          <div className="flex-1 overflow-hidden">
+            <TagTree />
+          </div>
         </div>
 
         <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />

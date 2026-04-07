@@ -236,9 +236,6 @@ export function WikiViewer({ tagId, tagName }: WikiViewerProps) {
   return (
     <div className="flex flex-col h-full">
       <WikiHeader
-        tagName={tagName}
-        updatedAt={selectedVersion ? selectedVersion.created_at : currentArticle.article.updated_at}
-        sourceCount={displayCitations.length}
         newAtomsAvailable={selectedVersion ? 0 : (articleStatus?.new_atoms_available || 0)}
         onUpdate={handleUpdate}
         onRegenerate={handleRegenerate}
@@ -272,6 +269,9 @@ export function WikiViewer({ tagId, tagName }: WikiViewerProps) {
             citations={displayCitations}
             wikiLinks={selectedVersion ? [] : wikiLinks}
             relatedTags={selectedVersion ? [] : relatedTags}
+            tagName={tagName}
+            updatedAt={selectedVersion ? selectedVersion.created_at : currentArticle.article.updated_at}
+            sourceCount={displayCitations.length}
             onViewAtom={handleViewAtom}
             onNavigateToArticle={handleNavigateToArticle}
           />

@@ -4,7 +4,7 @@ import type { CanvasLevel } from '../lib/api';
 import { getCanvasLevel } from '../lib/api';
 
 export type DrawerMode = 'editor' | 'viewer' | 'wiki' | 'chat';
-export type ViewMode = 'grid' | 'list' | 'canvas';
+export type ViewMode = 'grid' | 'list' | 'canvas' | 'wiki';
 
 interface DrawerState {
   isOpen: boolean;
@@ -41,8 +41,9 @@ interface UIStore {
   viewMode: ViewMode;
   searchQuery: string;
   loadingOperations: LoadingOperation[];
-  // Left panel state
+  // Panel state
   leftPanelOpen: boolean;
+  wikiSidebarOpen: boolean;
   // Server connection state
   serverConnected: boolean;
   // Local graph state
@@ -57,6 +58,8 @@ interface UIStore {
   setServerConnected: (connected: boolean) => void;
   setLeftPanelOpen: (open: boolean) => void;
   toggleLeftPanel: () => void;
+  setWikiSidebarOpen: (open: boolean) => void;
+  toggleWikiSidebar: () => void;
   setSelectedTag: (tagId: string | null) => void;
   expandTagPath: (tagIds: string[]) => void;  // Expand all tags in path
   toggleTagExpanded: (tagId: string) => void;
@@ -109,6 +112,7 @@ export const useUIStore = create<UIStore>()(
       },
       highlightedAtomId: null,
       leftPanelOpen: true,
+      wikiSidebarOpen: true,
       serverConnected: false,
       commandPaletteOpen: false,
       commandPaletteInitialQuery: '',
@@ -119,6 +123,8 @@ export const useUIStore = create<UIStore>()(
 
       setLeftPanelOpen: (open: boolean) => set({ leftPanelOpen: open }),
       toggleLeftPanel: () => set((state) => ({ leftPanelOpen: !state.leftPanelOpen })),
+      setWikiSidebarOpen: (open: boolean) => set({ wikiSidebarOpen: open }),
+      toggleWikiSidebar: () => set((state) => ({ wikiSidebarOpen: !state.wikiSidebarOpen })),
       setServerConnected: (connected: boolean) => set({ serverConnected: connected }),
 
       setSelectedTag: (tagId: string | null) => set({ selectedTagId: tagId }),

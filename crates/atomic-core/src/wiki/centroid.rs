@@ -14,7 +14,6 @@ use rusqlite::Connection;
 use super::{
     call_llm_for_wiki, extract_citations, batch_fetch_chunk_details,
     synthesize_article, WikiStrategyContext,
-    WIKI_UPDATE_SYSTEM_PROMPT,
 };
 
 /// Data needed for wiki article generation (extracted before async call)
@@ -59,6 +58,7 @@ pub(crate) async fn generate(
         &input,
         &ctx.wiki_model,
         &ctx.linkable_article_names,
+        ctx.generation_prompt(),
     ).await?;
 
     Ok(result)
@@ -101,6 +101,7 @@ pub(crate) async fn update(
         &input,
         &ctx.wiki_model,
         &ctx.linkable_article_names,
+        ctx.update_prompt(),
     ).await?;
 
     Ok(Some(result))
@@ -224,6 +225,7 @@ async fn generate_wiki_content(
     input: &WikiGenerationInput,
     model: &str,
     existing_article_names: &[(String, String)],
+    system_prompt: &str,
 ) -> Result<WikiArticleWithCitations, String> {
     synthesize_article(
         provider_config,
@@ -233,6 +235,7 @@ async fn generate_wiki_content(
         input.atom_count,
         model,
         existing_article_names,
+        system_prompt,
     )
     .await
 }
@@ -293,6 +296,7 @@ async fn update_wiki_content(
     input: &WikiUpdateInput,
     model: &str,
     existing_article_names: &[(String, String)],
+    system_prompt: &str,
 ) -> Result<WikiArticleWithCitations, String> {
     // Build existing sources section
     let mut existing_sources = String::new();
@@ -350,7 +354,7 @@ async fn update_wiki_content(
 
     // Call LLM API
     let result =
-        call_llm_for_wiki(provider_config, WIKI_UPDATE_SYSTEM_PROMPT, &user_content, model).await?;
+        call_llm_for_wiki(provider_config, system_prompt, &user_content, model).await?;
 
     // Create updated article
     let now = Utc::now().to_rfc3339();

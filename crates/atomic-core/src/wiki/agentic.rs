@@ -523,6 +523,7 @@ pub(crate) async fn generate(
         atom_count,
         &ctx.wiki_model,
         &ctx.linkable_article_names,
+        ctx.generation_prompt(),
     )
     .await
 }
@@ -645,6 +646,7 @@ pub(crate) async fn update(
         atom_count,
         &ctx.wiki_model,
         &ctx.linkable_article_names,
+        ctx.update_prompt(),
     )
     .await?;
 

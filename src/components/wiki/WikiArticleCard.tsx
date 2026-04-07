@@ -3,16 +3,21 @@ import { formatRelativeDate } from '../../lib/date';
 
 interface WikiArticleCardProps {
   article: WikiArticleSummary;
+  isActive?: boolean;
   onClick: () => void;
 }
 
-export function WikiArticleCard({ article, onClick }: WikiArticleCardProps) {
+export function WikiArticleCard({ article, isActive, onClick }: WikiArticleCardProps) {
   const updatedAt = formatRelativeDate(article.updated_at);
 
   return (
     <div
       onClick={onClick}
-      className="group px-4 py-3 hover:bg-[var(--color-bg-card)] cursor-pointer transition-colors"
+      className={`group px-4 py-3 cursor-pointer transition-colors ${
+        isActive
+          ? 'bg-[var(--color-accent)]/10'
+          : 'hover:bg-[var(--color-bg-card)]'
+      }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
