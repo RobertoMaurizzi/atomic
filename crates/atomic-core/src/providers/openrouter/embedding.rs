@@ -23,6 +23,21 @@ struct EmbeddingData {
     embedding: Vec<f32>,
 }
 
+/// OpenRouter may return HTTP 200 with an error body when the upstream provider
+/// fails after OpenRouter has started proxying the request.
+#[derive(Deserialize)]
+struct OpenRouterErrorResponse {
+    error: OpenRouterErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct OpenRouterErrorDetail {
+    #[serde(default)]
+    code: Option<serde_json::Value>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
 /// Generate embeddings for multiple texts via OpenRouter API
 pub async fn embed_batch(
     provider: &OpenRouterProvider,
@@ -72,6 +87,30 @@ pub async fn embed_batch(
     }
 
     let body = response.text().await?;
+
+    // OpenRouter can return HTTP 200 with an error body when the upstream
+    // provider fails after proxying has started. Check for this before
+    // trying to parse as a successful embedding response.
+    if let Ok(err_resp) = serde_json::from_str::<OpenRouterErrorResponse>(&body) {
+        let message = err_resp.error.message.unwrap_or_else(|| "Unknown upstream error".to_string());
+        let code = err_resp.error.code
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        tracing::error!(
+            model = %config.model,
+            error_code = %code,
+            error_message = %message,
+            "OpenRouter returned 200 with error body (upstream provider failure)"
+        );
+        // Always treat as 502 (upstream failure) so the adaptive retry
+        // will split the batch — the upstream error code may be 400
+        // (e.g. payload too large) but reducing batch size can fix it.
+        return Err(ProviderError::Api {
+            status: 502,
+            message: format!("[upstream {}] {}", code, message),
+        });
+    }
+
     let embedding_response: EmbeddingResponse = serde_json::from_str(&body)
         .map_err(|e| {
             tracing::error!(error = %e, model = %config.model, body_preview = %crate::providers::error::truncate_utf8(&body, 500), "OpenRouter embedding parse error");

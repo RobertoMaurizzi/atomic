@@ -58,12 +58,15 @@ impl fmt::Display for ProviderError {
 impl std::error::Error for ProviderError {}
 
 impl ProviderError {
-    /// Check if this error is retryable
+    /// Check if this error is retryable (same request or smaller batch).
+    /// Server errors (5xx) and upstream proxy failures are retryable since
+    /// they may succeed with a smaller batch or on retry.
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            ProviderError::RateLimited { .. } | ProviderError::Network(_)
-        )
+        match self {
+            ProviderError::RateLimited { .. } | ProviderError::Network(_) => true,
+            ProviderError::Api { status, .. } => *status >= 500,
+            _ => false,
+        }
     }
 
     /// Get suggested retry delay in seconds
